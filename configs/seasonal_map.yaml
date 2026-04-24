@@ -1,0 +1,120 @@
+seasonal_map:
+  refresh_interval_minutes: 30
+  freshness_threshold_hours: 18
+  rainy_day_threshold_mm: 1.0
+  dry_day_threshold_mm: 1.0
+  northern_latitude_threshold: 8.0
+  profiles:
+    northern_single:
+      label: Northern Uni Modal Seasonal
+      native_zone: north
+      onset_search_start_month: 3
+      onset_search_start_day: 15
+      onset_reference_month: 3
+      onset_reference_day: 25
+      onset_threshold_mm: 20.0
+      onset_window_days: 3
+      onset_requires_consecutive_days: false
+      onset_guard_window_days: 30
+      onset_guard_max_dry_spell_days: 10
+      onset_normal_band_days: 10
+      cessation_search_start_month: 10
+      cessation_search_start_day: 1
+      cessation_reference_month: 11
+      cessation_reference_day: 5
+      cessation_soil_water_mm: 70.0
+      cessation_et_mm_per_day: 4.0
+      cessation_normal_band_days: 10
+      rainfall_normal_mm: 980.0
+      rainy_days_normal: 68.0
+      calendar_subseasons: [MJJ, JJA, JAS]
+      calendar_rainfall_normals_mm:
+        MJJ: 315.0
+        JJA: 358.0
+        JAS: 302.0
+      calendar_rainy_days_normals:
+        MJJ: 24.0
+        JJA: 28.0
+        JAS: 23.0
+      rainfall_band_pct: 15.0
+      rainy_days_band: 6.0
+      early_dry_spell_moderate_days: 7
+      early_dry_spell_high_days: 11
+      late_dry_spell_moderate_days: 8
+      late_dry_spell_high_days: 12
+      rainfall_factor: 1.08
+      rainy_days_factor: 1.03
+    southern_major:
+      label: Southern Major Season
+      native_zone: south
+      onset_search_start_month: 2
+      onset_search_start_day: 1
+      onset_reference_month: 2
+      onset_reference_day: 12
+      onset_threshold_mm: 20.0
+      onset_window_days: 3
+      onset_requires_consecutive_days: false
+      onset_guard_window_days: 30
+      onset_guard_max_dry_spell_days: 10
+      onset_normal_band_days: 8
+      cessation_search_start_month: 7
+      cessation_search_start_day: 1
+      cessation_reference_month: 7
+      cessation_reference_day: 18
+      cessation_soil_water_mm: 70.0
+      cessation_et_mm_per_day: 4.0
+      cessation_normal_band_days: 8
+      rainfall_normal_mm: 540.0
+      rainy_days_normal: 42.0
+      calendar_subseasons: [MAM, AMJ, MJJ]
+      calendar_rainfall_normals_mm:
+        MAM: 228.0
+        AMJ: 246.0
+        MJJ: 214.0
+      calendar_rainy_days_normals:
+        MAM: 18.0
+        AMJ: 20.0
+        MJJ: 17.0
+      rainfall_band_pct: 15.0
+      rainy_days_band: 5.0
+      early_dry_spell_moderate_days: 5
+      early_dry_spell_high_days: 8
+      late_dry_spell_moderate_days: 6
+      late_dry_spell_high_days: 9
+      rainfall_factor: 1.0
+      rainy_days_factor: 1.0
+    southern_minor:
+      label: Southern Minor Season
+      native_zone: south
+      onset_search_start_month: 8
+      onset_search_start_day: 15
+      onset_reference_month: 8
+      onset_reference_day: 24
+      onset_threshold_mm: 20.0
+      onset_window_days: 3
+      onset_requires_consecutive_days: true
+      onset_guard_window_days: 30
+      onset_guard_max_dry_spell_days: 10
+      onset_normal_band_days: 8
+      cessation_search_start_month: 10
+      cessation_search_start_day: 1
+      cessation_reference_month: 11
+      cessation_reference_day: 7
+      cessation_soil_water_mm: 70.0
+      cessation_et_mm_per_day: 4.0
+      cessation_normal_band_days: 8
+      rainfall_normal_mm: 310.0
+      rainy_days_normal: 24.0
+      calendar_subseasons: [SON]
+      calendar_rainfall_normals_mm:
+        SON: 174.0
+      calendar_rainy_days_normals:
+        SON: 14.0
+      rainfall_band_pct: 15.0
+      rainy_days_band: 4.0
+      early_dry_spell_moderate_days: 5
+      early_dry_spell_high_days: 8
+      late_dry_spell_moderate_days: 6
+      late_dry_spell_high_days: 9
+      rainfall_factor: 0.88
+      rainy_days_factor: 0.9

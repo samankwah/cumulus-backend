@@ -1,0 +1,25 @@
+advisory:
+  dry_day_threshold_mm: 1.0
+  dry_spell_days: 7
+  onset_window_days: 3
+  onset_threshold_mm: 20.0
+  onset_guard_days: 10
+  onset_guard_dry_days: 7
+  cessation_window_days: 14
+  cessation_threshold_mm: 10.0
+  cumulative_windows_days:
+    - 7
+    - 14
+  farmer:
+    crop_name: maize
+    planting_window_days: 3
+    planting_rain_threshold_mm: 20.0
+    planting_guard_days: 10
+    planting_guard_dry_days: 7
+    dry_spell_watch_days: 5
+    dry_spell_warning_days: 7
+    irrigation_window_days: 5
+    irrigation_target_rain_mm: 15.0
+    irrigation_severe_deficit_mm: 8.0
+    hot_temperature_c: 32.0
+    high_stress_temperature_c: 35.0

@@ -1,0 +1,53 @@
+{
+  "request": {
+    "location_id": "tamale",
+    "daily_forecast": [
+      {"date": "2024-05-01", "rainfall_mm": 8.0, "temperature_c": 30.0},
+      {"date": "2024-05-02", "rainfall_mm": 7.0, "temperature_c": 30.0},
+      {"date": "2024-05-03", "rainfall_mm": 6.0, "temperature_c": 30.0},
+      {"date": "2024-05-04", "rainfall_mm": 0.0, "temperature_c": 30.0},
+      {"date": "2024-05-05", "rainfall_mm": 0.0, "temperature_c": 30.0},
+      {"date": "2024-05-06", "rainfall_mm": 0.0, "temperature_c": 30.0},
+      {"date": "2024-05-07", "rainfall_mm": 0.0, "temperature_c": 30.0},
+      {"date": "2024-05-08", "rainfall_mm": 0.0, "temperature_c": 30.0},
+      {"date": "2024-05-09", "rainfall_mm": 0.0, "temperature_c": 30.0},
+      {"date": "2024-05-10", "rainfall_mm": 0.0, "temperature_c": 30.0}
+    ]
+  },
+  "response": {
+    "location_id": "tamale",
+    "planting_recommendation": {
+      "level": "delay_due_to_dry_spell_risk",
+      "headline": "Delay maize planting",
+      "recommendation": "Hold planting until rain resumes and the dry spell risk drops.",
+      "reason": "About 21.0 mm is forecast in the next 3 days, but the following outlook includes a 7-day dry spell that could stop germination.",
+      "window_rainfall_mm": 21.0,
+      "rainfall_deficit_mm": null,
+      "dry_spell_length_days": 7,
+      "avg_temperature_c": 30.0,
+      "temperature_band": "normal"
+    },
+    "dry_spell_alert": {
+      "level": "warning",
+      "headline": "Long dry spell likely",
+      "recommendation": "Delay planting or protect young crops because a week-long dry spell is likely.",
+      "reason": "The forecast shows up to 7 consecutive dry days, which meets the warning threshold.",
+      "window_rainfall_mm": null,
+      "rainfall_deficit_mm": null,
+      "dry_spell_length_days": 7,
+      "avg_temperature_c": null,
+      "temperature_band": null
+    },
+    "irrigation_advice": {
+      "level": "no_irrigation_needed",
+      "headline": "No irrigation needed now",
+      "recommendation": "Recent forecast rain should support maize establishment without extra watering.",
+      "reason": "About 21.0 mm is forecast over the next 5 days, so there is no rainfall deficit to cover.",
+      "window_rainfall_mm": 21.0,
+      "rainfall_deficit_mm": 0.0,
+      "dry_spell_length_days": null,
+      "avg_temperature_c": 30.0,
+      "temperature_band": "normal"
+    }
+  }
+}

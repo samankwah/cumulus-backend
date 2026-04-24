@@ -1,0 +1,113 @@
+locations:
+  - location_id: accra
+    latitude: 5.6037
+    longitude: -0.1870
+    region: Greater Accra
+    district: Accra Metropolitan
+    agro_ecological_zone: Coastal Savannah
+    is_serving_location: true
+  - location_id: tamale
+    latitude: 9.4075
+    longitude: -0.8533
+    region: Northern
+    district: Tamale Metropolitan
+    agro_ecological_zone: Guinea Savannah
+    is_serving_location: true
+  - location_id: kumasi
+    latitude: 6.6885
+    longitude: -1.6244
+    region: Ashanti
+    district: Kumasi Metropolitan
+    agro_ecological_zone: Forest
+    is_serving_location: true
+  - location_id: cape_coast
+    latitude: 5.1053
+    longitude: -1.2466
+    region: Central
+    district: Cape Coast Metropolitan
+    agro_ecological_zone: Coastal Savannah
+    is_serving_location: true
+  - location_id: sekondi_takoradi
+    latitude: 4.9340
+    longitude: -1.7137
+    region: Western
+    district: Sekondi Takoradi Metropolitan
+    agro_ecological_zone: Coastal Savannah
+    is_serving_location: true
+  - location_id: sefwi_wiawso
+    latitude: 6.2060
+    longitude: -2.4890
+    region: Western North
+    district: Sefwi Wiawso Municipal
+    agro_ecological_zone: Forest
+    is_serving_location: true
+  - location_id: koforidua
+    latitude: 6.0941
+    longitude: -0.2591
+    region: Eastern
+    district: New Juaben South Municipal
+    agro_ecological_zone: Forest
+    is_serving_location: true
+  - location_id: ho
+    latitude: 6.6111
+    longitude: 0.4703
+    region: Volta
+    district: Ho Municipal
+    agro_ecological_zone: Transition
+    is_serving_location: true
+  - location_id: dambai
+    latitude: 8.0683
+    longitude: 0.1802
+    region: Oti
+    district: Krachi East Municipal
+    agro_ecological_zone: Transition
+    is_serving_location: true
+  - location_id: sunyani
+    latitude: 7.3399
+    longitude: -2.3268
+    region: Bono
+    district: Sunyani Municipal
+    agro_ecological_zone: Forest
+    is_serving_location: true
+  - location_id: techiman
+    latitude: 7.5842
+    longitude: -1.9381
+    region: Bono East
+    district: Techiman Municipal
+    agro_ecological_zone: Transition
+    is_serving_location: true
+  - location_id: goaso
+    latitude: 6.8000
+    longitude: -2.5167
+    region: Ahafo
+    district: Asunafo North Municipal
+    agro_ecological_zone: Forest
+    is_serving_location: true
+  - location_id: damongo
+    latitude: 9.0822
+    longitude: -1.8156
+    region: Savannah
+    district: West Gonja Municipal
+    agro_ecological_zone: Guinea Savannah
+    is_serving_location: true
+  - location_id: wa
+    latitude: 10.0601
+    longitude: -2.5099
+    region: Upper West
+    district: Wa Municipal
+    agro_ecological_zone: Sudan Savannah
+    is_serving_location: true
+  - location_id: bolgatanga
+    latitude: 10.7856
+    longitude: -0.8514
+    region: Upper East
+    district: Bolgatanga Municipal
+    agro_ecological_zone: Sudan Savannah
+    is_serving_location: true
+  - location_id: nalerigu
+    latitude: 10.5273
+    longitude: -0.3693
+    region: North East
+    district: East Mamprusi Municipal
+    agro_ecological_zone: Sudan Savannah
+    is_serving_location: true

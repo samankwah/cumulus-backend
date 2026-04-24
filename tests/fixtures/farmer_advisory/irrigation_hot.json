@@ -1,0 +1,53 @@
+{
+  "request": {
+    "location_id": "navrongo",
+    "daily_forecast": [
+      {"date": "2024-05-01", "rainfall_mm": 0.0, "temperature_c": 35.0},
+      {"date": "2024-05-02", "rainfall_mm": 0.0, "temperature_c": 35.0},
+      {"date": "2024-05-03", "rainfall_mm": 0.0, "temperature_c": 35.0},
+      {"date": "2024-05-04", "rainfall_mm": 0.0, "temperature_c": 35.0},
+      {"date": "2024-05-05", "rainfall_mm": 0.0, "temperature_c": 35.0},
+      {"date": "2024-05-06", "rainfall_mm": 0.0, "temperature_c": 35.0},
+      {"date": "2024-05-07", "rainfall_mm": 1.0, "temperature_c": 34.0},
+      {"date": "2024-05-08", "rainfall_mm": 2.0, "temperature_c": 34.0},
+      {"date": "2024-05-09", "rainfall_mm": 1.0, "temperature_c": 34.0},
+      {"date": "2024-05-10", "rainfall_mm": 1.0, "temperature_c": 34.0}
+    ]
+  },
+  "response": {
+    "location_id": "navrongo",
+    "planting_recommendation": {
+      "level": "wait_for_more_rain",
+      "headline": "Wait for more rain",
+      "recommendation": "Do not plant maize yet; wait for a stronger soaking rain.",
+      "reason": "Only 0.0 mm is forecast in the next 3 days, below the 20.0 mm planting trigger.",
+      "window_rainfall_mm": 0.0,
+      "rainfall_deficit_mm": null,
+      "dry_spell_length_days": 6,
+      "avg_temperature_c": 35.0,
+      "temperature_band": "high_stress"
+    },
+    "dry_spell_alert": {
+      "level": "watch",
+      "headline": "Dry spell watch",
+      "recommendation": "Keep seed on hold and watch for a break in the dry spell.",
+      "reason": "The forecast shows up to 6 consecutive dry days, which is above the 5-day watch level.",
+      "window_rainfall_mm": null,
+      "rainfall_deficit_mm": null,
+      "dry_spell_length_days": 6,
+      "avg_temperature_c": null,
+      "temperature_band": null
+    },
+    "irrigation_advice": {
+      "level": "irrigate_if_possible",
+      "headline": "Irrigation is recommended",
+      "recommendation": "If you can irrigate, apply water to keep the root zone from drying out.",
+      "reason": "Only 0.0 mm is forecast over the next 5 days, leaving a 15.0 mm rainfall deficit. Hot conditions increase moisture loss.",
+      "window_rainfall_mm": 0.0,
+      "rainfall_deficit_mm": 15.0,
+      "dry_spell_length_days": null,
+      "avg_temperature_c": 35.0,
+      "temperature_band": "high_stress"
+    }
+  }
+}

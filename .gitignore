@@ -1,7 +1,8 @@
 .pytest_cache/
 build/
 src/cumulus.egg-info/
-src/**/__pycache__/
+**/__pycache__/
+*.pyc
 data/artifacts/nationwide/*
 !data/artifacts/nationwide/.gitkeep
 data/artifacts/seasonal_map/*

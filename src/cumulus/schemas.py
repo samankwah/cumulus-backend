@@ -105,6 +105,7 @@ class ForecastResponse(SchemaModel):
     data_origin: str | None = None
     source_run_id: str | None = None
     calibration_version: str | None = None
+    seasonal_refresh: SeasonalMapRefreshResponse | None = None
     results: list[ForecastResultResponse]
 
 
@@ -312,6 +313,39 @@ class SeasonalMapProductResponse(SeasonalMapRunResponse):
     legend: list[SeasonalLegendItemResponse]
     district_items: list[SeasonalMapAreaResponse]
     region_items: list[SeasonalMapAreaResponse]
+
+
+class SeasonalMapRefreshCombinationResponse(SchemaModel):
+    theme: str
+    season_profile: str
+    mode: str
+    subseason: str | None = None
+
+
+class SeasonalMapRefreshSuccessResponse(SeasonalMapRefreshCombinationResponse):
+    product_id: str
+    generated_at: datetime
+    active_pointer_path: str
+    legacy_active_pointer_path: str | None = None
+
+
+class SeasonalMapRefreshFailureResponse(SeasonalMapRefreshCombinationResponse):
+    error: str
+
+
+class SeasonalMapRefreshResponse(SchemaModel):
+    forecast_source: str
+    forecast_source_label: str
+    requested_theme: str | None = None
+    requested_season_profile: str | None = None
+    requested_mode: str | None = None
+    requested_subseason: str | None = None
+    attempted_count: int
+    succeeded_count: int
+    failed_count: int
+    attempted: list[SeasonalMapRefreshCombinationResponse]
+    succeeded: list[SeasonalMapRefreshSuccessResponse]
+    failed: list[SeasonalMapRefreshFailureResponse]
 
 
 class SeasonalThemeOptionsResponse(SchemaModel):

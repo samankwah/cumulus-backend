@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
+from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from functools import lru_cache
 import json
@@ -21,7 +22,12 @@ from cumulus.api.errors import (
 )
 from cumulus.data.extractors import extract_locations
 from cumulus.modeling.predictor import predict_dataframe
-from cumulus.services.source_resolution import normalize_forecast_source_id, open_source_dataset, resolve_forecast_source
+from cumulus.services.source_resolution import (
+    ResolvedForecastSource,
+    normalize_forecast_source_id,
+    open_source_dataset,
+    resolve_forecast_source,
+)
 from cumulus.settings import SeasonalProfileConfig, Settings
 from cumulus.utils.io import ensure_directory, read_json, write_json
 
@@ -36,6 +42,13 @@ SEASONAL_THEMES = (
     "rainfall_amount",
     "rainy_days",
 )
+REGIME_BOUND_THEMES = (
+    "onset",
+    "cessation",
+    "early_dry_spell",
+    "late_dry_spell",
+)
+SEASONAL_ONLY_THEMES = REGIME_BOUND_THEMES
 SEASONAL_MODES = ("seasonal", "calendar")
 CALENDAR_CAPABLE_THEMES = ("rainfall_amount", "rainy_days")
 CALENDAR_SUBSEASON_MONTHS = {
@@ -58,6 +71,22 @@ THEME_LABELS = {
 MODE_LABELS = {"seasonal": "Seasonal", "calendar": "Calendar"}
 
 
+@dataclass(frozen=True)
+class SeasonalRefreshCombination:
+    theme: str
+    season_profile: str
+    mode: str
+    subseason: str | None = None
+
+    def to_payload(self) -> dict[str, str | None]:
+        return {
+            "theme": self.theme,
+            "season_profile": self.season_profile,
+            "mode": self.mode,
+            "subseason": self.subseason,
+        }
+
+
 def generate_seasonal_map_product(
     settings: Settings,
     theme: str,
@@ -66,6 +95,7 @@ def generate_seasonal_map_product(
     mode: str,
     subseason: str | None = None,
     forecast_source: str | None = None,
+    resolved_source_override: ResolvedForecastSource | None = None,
 ) -> dict[str, Any]:
     normalized_theme = _resolve_theme(theme)
     normalized_profile, profile = _resolve_profile_config(settings, season_profile)
@@ -75,7 +105,26 @@ def generate_seasonal_map_product(
         mode,
         subseason,
     )
-    resolved_source = resolve_forecast_source(settings, forecast_source)
+    resolved_source = resolved_source_override or resolve_forecast_source(settings, forecast_source)
+    district_catalog, predicted, metadata = _prepare_generation_inputs(settings, resolved_source)
+    return _build_seasonal_map_product(
+        settings,
+        normalized_theme=normalized_theme,
+        normalized_profile=normalized_profile,
+        profile=profile,
+        normalized_mode=normalized_mode,
+        normalized_subseason=normalized_subseason,
+        resolved_source=resolved_source,
+        district_catalog=district_catalog,
+        predicted=predicted,
+        metadata=metadata,
+    )
+
+
+def _prepare_generation_inputs(
+    settings: Settings,
+    resolved_source: ResolvedForecastSource,
+) -> tuple[list[dict[str, Any]], pd.DataFrame, dict[str, Any]]:
     district_catalog = _load_district_catalog(
         str(settings.seasonal_map.district_geojson_path),
         settings.seasonal_map.northern_latitude_threshold,
@@ -84,10 +133,7 @@ def generate_seasonal_map_product(
         raise ValueError(f"No district features were found in {settings.seasonal_map.district_geojson_path}.")
 
     logger.info(
-        "seasonal_map.generate_start theme=%s season_profile=%s mode=%s forecast_source=%s districts=%s",
-        normalized_theme,
-        normalized_profile,
-        normalized_mode,
+        "seasonal_map.prepare_inputs forecast_source=%s districts=%s",
         resolved_source.source_id,
         len(district_catalog),
     )
@@ -105,7 +151,22 @@ def generate_seasonal_map_product(
     extracted = extract_locations(dataset, locations, list(dataset.data_vars))
     predicted, metadata = predict_dataframe(extracted, settings, forecast_source=resolved_source.source_id)
     predicted = predicted.sort_values(["location_id", "time"]).reset_index(drop=True)
+    return district_catalog, predicted, metadata
 
+
+def _build_seasonal_map_product(
+    settings: Settings,
+    *,
+    normalized_theme: str,
+    normalized_profile: str,
+    profile: SeasonalProfileConfig,
+    normalized_mode: str,
+    normalized_subseason: str | None,
+    resolved_source: ResolvedForecastSource,
+    district_catalog: list[dict[str, Any]],
+    predicted: pd.DataFrame,
+    metadata: dict[str, Any],
+) -> dict[str, Any]:
     generated_at = datetime.now(UTC)
     forecast_cycle = _build_forecast_cycle(predicted)
     district_items: list[dict[str, Any]] = []
@@ -115,6 +176,8 @@ def generate_seasonal_map_product(
         for location_id, frame in predicted.groupby("location_id", sort=False)
     }
     for district in district_catalog:
+        if _theme_uses_regime_footprint(normalized_theme) and not _district_matches_profile_footprint(district, profile):
+            continue
         frame = grouped.get(district["location_id"], pd.DataFrame(columns=["time", "rainfall_corrected_mm"]))
         raw_metrics = _derive_raw_metrics(frame, district, profile, settings)
         district_metrics.append({"region_name": district["region_name"], **raw_metrics})
@@ -125,9 +188,10 @@ def generate_seasonal_map_product(
                 region_name=district["region_name"],
                 location_id=district["location_id"],
                 coverage_count=1,
-                coverage_note=(
-                    f"District classification uses the {profile.label} regime and the district representative latitude "
-                    f"({district['latitude']:.2f} N, {district['regime_zone']} zone)."
+                coverage_note=_district_coverage_note(
+                    district=district,
+                    profile=profile,
+                    theme=normalized_theme,
                 ),
                 raw_metrics=raw_metrics,
                 theme=normalized_theme,
@@ -150,6 +214,7 @@ def generate_seasonal_map_product(
         f"seasonal_{resolved_source.source_id}_{normalized_profile}_{normalized_theme}_{normalized_mode}"
         f"{f'_{normalized_subseason.lower()}' if normalized_subseason else ''}_{generated_at.strftime('%Y%m%dT%H%M%SZ')}"
     )
+    run_id = generated_at.strftime("%Y%m%dT%H%M%S%fZ")
     run_dir = ensure_directory(
         _artifact_scope_path(
             settings,
@@ -160,7 +225,7 @@ def generate_seasonal_map_product(
             normalized_subseason,
         )
         / "runs"
-        / product_id
+        / run_id
     )
     product_path = run_dir / "product.json"
     manifest_path = run_dir / "manifest.json"
@@ -217,6 +282,22 @@ def generate_seasonal_map_product(
             "subseason": normalized_subseason,
         },
     )
+    if normalized_mode == "seasonal" and normalized_subseason is None:
+        write_json(
+            _legacy_active_pointer_path(
+                settings,
+                resolved_source.source_id,
+                normalized_profile,
+                normalized_theme,
+            ),
+            {
+                "product_id": product_id,
+                "product_path": str(product_path),
+                "manifest_path": str(manifest_path),
+                "mode": normalized_mode,
+                "subseason": normalized_subseason,
+            },
+        )
     clear_seasonal_map_cache()
     logger.info(
         "seasonal_map.generate_success theme=%s season_profile=%s mode=%s subseason=%s forecast_source=%s product_id=%s",
@@ -235,31 +316,130 @@ def generate_all_seasonal_map_products(
     *,
     forecast_source: str | None = None,
 ) -> list[dict[str, Any]]:
-    manifests: list[dict[str, Any]] = []
-    for season_profile in settings.seasonal_map.profiles:
-        for theme in SEASONAL_THEMES:
-            manifests.append(
-                generate_seasonal_map_product(
-                    settings,
-                    theme,
-                    season_profile,
-                    mode="seasonal",
-                    forecast_source=forecast_source,
-                )
+    summary = refresh_seasonal_map_products(settings, forecast_source=forecast_source, include_manifests=True)
+    return [item["manifest"] for item in summary["succeeded"]]
+
+
+def refresh_seasonal_map_products(
+    settings: Settings,
+    *,
+    theme: str | None = None,
+    season_profile: str | None = None,
+    mode: str | None = None,
+    subseason: str | None = None,
+    forecast_source: str | None = None,
+    resolved_source_override: ResolvedForecastSource | None = None,
+    include_manifests: bool = False,
+) -> dict[str, Any]:
+    resolved_source = resolved_source_override or resolve_forecast_source(settings, forecast_source)
+    combinations = _build_refresh_combinations(
+        settings,
+        theme=theme,
+        season_profile=season_profile,
+        mode=mode,
+        subseason=subseason,
+    )
+    attempted = [item.to_payload() for item in combinations]
+    succeeded: list[dict[str, Any]] = []
+    failed: list[dict[str, Any]] = []
+    district_catalog, predicted, metadata = _prepare_generation_inputs(settings, resolved_source)
+
+    logger.info(
+        "seasonal_map.refresh_start forecast_source=%s combinations=%s theme=%s season_profile=%s mode=%s subseason=%s",
+        resolved_source.source_id,
+        len(combinations),
+        theme,
+        season_profile,
+        mode,
+        subseason,
+    )
+    for combination in combinations:
+        try:
+            normalized_profile, profile = _resolve_profile_config(settings, combination.season_profile)
+            normalized_mode, normalized_subseason = _resolve_mode_and_subseason(
+                combination.theme,
+                profile,
+                combination.mode,
+                combination.subseason,
             )
-            if theme in CALENDAR_CAPABLE_THEMES:
-                for subseason in settings.seasonal_map.profiles[season_profile].calendar_subseasons:
-                    manifests.append(
-                        generate_seasonal_map_product(
-                            settings,
-                            theme,
-                            season_profile,
-                            mode="calendar",
-                            subseason=subseason,
-                            forecast_source=forecast_source,
-                        )
+            manifest = _build_seasonal_map_product(
+                settings,
+                normalized_theme=combination.theme,
+                normalized_profile=normalized_profile,
+                profile=profile,
+                normalized_mode=normalized_mode,
+                normalized_subseason=normalized_subseason,
+                resolved_source=resolved_source,
+                district_catalog=district_catalog,
+                predicted=predicted,
+                metadata=metadata,
+            )
+        except Exception as exc:
+            logger.exception(
+                "seasonal_map.refresh_failed theme=%s season_profile=%s mode=%s subseason=%s forecast_source=%s",
+                combination.theme,
+                combination.season_profile,
+                combination.mode,
+                combination.subseason,
+                resolved_source.source_id,
+            )
+            failed.append({**combination.to_payload(), "error": str(exc)})
+            continue
+        success_item = {
+            **combination.to_payload(),
+            "product_id": manifest["product_id"],
+            "generated_at": manifest["generated_at"],
+            "active_pointer_path": str(
+                _active_pointer_path(
+                    settings,
+                    resolved_source.source_id,
+                    combination.season_profile,
+                    combination.theme,
+                    combination.mode,
+                    combination.subseason,
+                )
+            ),
+            "legacy_active_pointer_path": (
+                str(
+                    _legacy_active_pointer_path(
+                        settings,
+                        resolved_source.source_id,
+                        combination.season_profile,
+                        combination.theme,
                     )
-    return manifests
+                )
+                if combination.mode == "seasonal" and combination.subseason is None
+                else None
+            ),
+        }
+        if include_manifests:
+            success_item["manifest"] = manifest
+        succeeded.append(success_item)
+
+    summary = {
+        "forecast_source": resolved_source.source_id,
+        "forecast_source_label": _forecast_source_label(resolved_source.source_id),
+        "requested_theme": _resolve_theme(theme) if theme is not None else None,
+        "requested_season_profile": (
+            _resolve_profile_config(settings, season_profile)[0] if season_profile is not None else None
+        ),
+        "requested_mode": str(mode).strip().lower() if mode is not None else None,
+        "requested_subseason": str(subseason).strip().upper() if subseason is not None else None,
+        "attempted_count": len(attempted),
+        "succeeded_count": len(succeeded),
+        "failed_count": len(failed),
+        "attempted": attempted,
+        "succeeded": succeeded,
+        "failed": failed,
+    }
+    logger.info(
+        "seasonal_map.refresh_complete forecast_source=%s attempted=%s succeeded=%s failed=%s",
+        resolved_source.source_id,
+        summary["attempted_count"],
+        summary["succeeded_count"],
+        summary["failed_count"],
+    )
+    return summary
 
 
 def get_active_seasonal_map_product(
@@ -284,7 +464,7 @@ def get_active_seasonal_map_product(
         or normalize_forecast_source_id(settings.default_forecast_source)
         or "configured"
     )
-    pointer_path = _active_pointer_path(
+    pointer_path = _resolve_active_pointer_path(
         settings,
         source_id,
         normalized_profile,
@@ -295,17 +475,41 @@ def get_active_seasonal_map_product(
     try:
         pointer = read_json(pointer_path)
     except FileNotFoundError as exc:
-        raise SeasonalMapArtifactsNotAvailableError(
-            (
-                "No active seasonal map product is available for "
-                f"theme={normalized_theme} season_profile={normalized_profile} mode={normalized_mode}"
-                f"{f' subseason={normalized_subseason}' if normalized_subseason else ''} under {settings.seasonal_map.artifact_dir}."
-            )
-        ) from exc
-    product_path = pointer.get("product_path")
-    if not product_path:
-        raise SeasonalMapArtifactsNotAvailableError("Seasonal map active pointer is incomplete.")
-    payload = _read_json_cached(str(Path(product_path).resolve()))
+        pointer = {}
+        fallback_product_path = _discover_latest_product_path(
+            settings,
+            source_id,
+            normalized_profile,
+            normalized_theme,
+            normalized_mode,
+            normalized_subseason,
+        )
+        if fallback_product_path is None:
+            raise SeasonalMapArtifactsNotAvailableError(
+                (
+                    "No active seasonal map product is available for "
+                    f"theme={normalized_theme} season_profile={normalized_profile} mode={normalized_mode}"
+                    f"{f' subseason={normalized_subseason}' if normalized_subseason else ''} under {settings.seasonal_map.artifact_dir}."
+                )
+            ) from exc
+        pointer["product_path"] = str(fallback_product_path)
+    product_path = _resolve_product_path(
+        pointer,
+        settings=settings,
+        source_id=source_id,
+        season_profile=normalized_profile,
+        theme=normalized_theme,
+        mode=normalized_mode,
+        subseason=normalized_subseason,
+    )
+    payload = _normalize_product_payload(
+        _read_json_cached(str(product_path.resolve())),
+        source_id=source_id,
+        theme=normalized_theme,
+        season_profile=normalized_profile,
+        mode=normalized_mode,
+        subseason=normalized_subseason,
+    )
     generated_at = datetime.fromisoformat(str(payload["generated_at"]))
     is_stale = datetime.now(UTC) - generated_at > timedelta(hours=settings.seasonal_map.freshness_threshold_hours)
     return {
@@ -341,6 +545,102 @@ def get_seasonal_map_options(settings: Settings) -> dict[str, Any]:
 def clear_seasonal_map_cache() -> None:
     _read_json_cached.cache_clear()
     _load_district_catalog.cache_clear()
+
+
+def _build_refresh_combinations(
+    settings: Settings,
+    *,
+    theme: str | None = None,
+    season_profile: str | None = None,
+    mode: str | None = None,
+    subseason: str | None = None,
+) -> list[SeasonalRefreshCombination]:
+    requested_theme = _resolve_theme(theme) if theme is not None else None
+    requested_mode = _normalize_mode_filter(mode)
+    requested_subseason = str(subseason).strip().upper() if subseason is not None else None
+    if requested_subseason is not None and requested_mode != "calendar":
+        raise SubseasonNotAllowedError("Sub-season filters require mode=calendar.")
+
+    profiles: list[tuple[str, SeasonalProfileConfig]]
+    if season_profile is None:
+        profiles = list(settings.seasonal_map.profiles.items())
+    else:
+        profiles = [_resolve_profile_config(settings, season_profile)]
+
+    theme_ids = [requested_theme] if requested_theme is not None else list(SEASONAL_THEMES)
+    combinations: list[SeasonalRefreshCombination] = []
+    for profile_id, profile in profiles:
+        for theme_id in theme_ids:
+            combinations.extend(
+                _combinations_for_theme_profile(
+                    theme_id,
+                    profile_id,
+                    profile,
+                    requested_theme=requested_theme,
+                    requested_mode=requested_mode,
+                    requested_subseason=requested_subseason,
+                )
+            )
+
+    if not combinations:
+        raise ValueError("No valid seasonal refresh combinations matched the supplied filters.")
+    return combinations
+
+
+def _normalize_mode_filter(mode: str | None) -> str | None:
+    if mode is None:
+        return None
+    normalized_mode = str(mode).strip().lower()
+    if normalized_mode not in SEASONAL_MODES:
+        supported = ", ".join(SEASONAL_MODES)
+        raise InvalidSeasonalModeError(f"Unsupported mode '{mode}'. Expected one of: {supported}.")
+    return normalized_mode
+
+
+def _combinations_for_theme_profile(
+    theme: str,
+    season_profile: str,
+    profile: SeasonalProfileConfig,
+    *,
+    requested_theme: str | None,
+    requested_mode: str | None,
+    requested_subseason: str | None,
+) -> list[SeasonalRefreshCombination]:
+    combinations: list[SeasonalRefreshCombination] = []
+    include_seasonal = requested_mode == "seasonal" or (requested_mode is None and theme in SEASONAL_ONLY_THEMES)
+    include_calendar = requested_mode == "calendar" or (requested_mode is None and theme in CALENDAR_CAPABLE_THEMES)
+
+    if include_seasonal and requested_subseason is None:
+        combinations.append(SeasonalRefreshCombination(theme=theme, season_profile=season_profile, mode="seasonal"))
+
+    if not include_calendar:
+        return combinations
+    if theme not in CALENDAR_CAPABLE_THEMES:
+        if requested_theme == theme and requested_mode == "calendar":
+            raise InvalidSeasonalModeError(f"Calendar mode is not supported for theme={theme}.")
+        return combinations
+
+    candidate_subseasons = [requested_subseason] if requested_subseason is not None else list(profile.calendar_subseasons)
+    if requested_subseason is not None and requested_subseason not in profile.calendar_subseasons:
+        if requested_theme == theme and requested_mode == "calendar" and len(candidate_subseasons) == 1:
+            _resolve_mode_and_subseason(theme, profile, "calendar", requested_subseason)
+        return combinations
+    for candidate_subseason in candidate_subseasons:
+        normalized_mode, normalized_subseason = _resolve_mode_and_subseason(
+            theme,
+            profile,
+            "calendar",
+            candidate_subseason,
+        )
+        combinations.append(
+            SeasonalRefreshCombination(
+                theme=theme,
+                season_profile=season_profile,
+                mode=normalized_mode,
+                subseason=normalized_subseason,
+            )
+        )
+    return combinations
 
 
 @lru_cache(maxsize=64)
@@ -645,9 +945,11 @@ def _build_region_items(
                 region_name=region_name,
                 location_id=_slugify(region_name),
                 coverage_count=len(metrics),
-                coverage_note=(
-                    f"Regional classification aggregates {len(metrics)} district outputs generated under the "
-                    f"{profile.label} regime."
+                coverage_note=_region_coverage_note(
+                    region_name=region_name,
+                    coverage_count=len(metrics),
+                    profile=profile,
+                    theme=theme,
                 ),
                 raw_metrics=raw_metrics,
                 theme=theme,
@@ -1165,8 +1467,53 @@ def _rainfall_year(frame: pd.DataFrame) -> int:
     return datetime.now(UTC).year
 
 
+def _theme_uses_regime_footprint(theme: str) -> bool:
+    return theme in REGIME_BOUND_THEMES
+
+
 def _district_regime_zone(latitude: float, northern_latitude_threshold: float) -> str:
     return "north" if float(latitude) >= northern_latitude_threshold else "south"
+
+
+def _district_matches_profile_footprint(district: dict[str, Any], profile: SeasonalProfileConfig) -> bool:
+    return str(district.get("regime_zone")) == profile.native_zone
+
+
+def _district_coverage_note(
+    *,
+    district: dict[str, Any],
+    profile: SeasonalProfileConfig,
+    theme: str,
+) -> str:
+    latitude = float(district["latitude"])
+    regime_zone = str(district["regime_zone"])
+    if _theme_uses_regime_footprint(theme):
+        return (
+            f"District classification is published only inside the {profile.label} agro-ecological footprint. "
+            f"This district falls in the {regime_zone} zone at a representative latitude of {latitude:.2f} N."
+        )
+    return (
+        f"District classification remains nationwide. The {profile.label} selection changes the seasonal criteria, "
+        f"normals, and labels, while this district remains visible at {latitude:.2f} N in the {regime_zone} zone."
+    )
+
+
+def _region_coverage_note(
+    *,
+    region_name: str,
+    coverage_count: int,
+    profile: SeasonalProfileConfig,
+    theme: str,
+) -> str:
+    if _theme_uses_regime_footprint(theme):
+        return (
+            f"Regional classification for {region_name} aggregates {coverage_count} in-footprint district outputs "
+            f"that match the {profile.label} agro-ecological footprint."
+        )
+    return (
+        f"Regional classification for {region_name} aggregates all {coverage_count} district outputs returned for "
+        f"the region. The {profile.label} selection only changes the seasonal criteria, normals, and labels."
+    )
 
 
 def _profile_alignment_factor(regime_zone: str, native_zone: str) -> float:
@@ -1248,6 +1595,15 @@ def _artifact_scope_path(
     return scope
 
 
+def _legacy_artifact_scope_path(
+    settings: Settings,
+    source_id: str,
+    season_profile: str,
+    theme: str,
+) -> Path:
+    return settings.seasonal_map.artifact_dir / source_id / season_profile / theme
+
+
 def _active_pointer_path(
     settings: Settings,
     source_id: str,
@@ -1259,11 +1615,158 @@ def _active_pointer_path(
     suffix = f"{source_id}_{season_profile}_{theme}_{mode}"
     if subseason:
         suffix = f"{suffix}_{subseason.lower()}"
-    preferred = settings.seasonal_map.artifact_dir / f"active_{suffix}.json"
-    if preferred.exists():
-        return preferred
-    pattern = f"active_*_{season_profile}_{theme}_{mode}{f'_{subseason.lower()}' if subseason else ''}.json"
-    matches = sorted(settings.seasonal_map.artifact_dir.glob(pattern))
+    return settings.seasonal_map.artifact_dir / f"active_{suffix}.json"
+
+
+def _legacy_active_pointer_path(
+    settings: Settings,
+    source_id: str,
+    season_profile: str,
+    theme: str,
+) -> Path:
+    return settings.seasonal_map.artifact_dir / f"active_{source_id}_{season_profile}_{theme}.json"
+
+
+def _resolve_active_pointer_path(
+    settings: Settings,
+    source_id: str,
+    season_profile: str,
+    theme: str,
+    mode: str,
+    subseason: str | None,
+) -> Path:
+    canonical = _active_pointer_path(settings, source_id, season_profile, theme, mode, subseason)
+    if canonical.exists():
+        return canonical
+    canonical_pattern = f"active_*_{season_profile}_{theme}_{mode}{f'_{subseason.lower()}' if subseason else ''}.json"
+    canonical_match = _unique_glob_match(settings.seasonal_map.artifact_dir, canonical_pattern)
+    if canonical_match is not None:
+        return canonical_match
+    if mode == "seasonal" and subseason is None:
+        legacy = _legacy_active_pointer_path(settings, source_id, season_profile, theme)
+        if legacy.exists():
+            return legacy
+        legacy_match = _unique_glob_match(settings.seasonal_map.artifact_dir, f"active_*_{season_profile}_{theme}.json")
+        if legacy_match is not None:
+            return legacy_match
+    return canonical
+
+
+def _candidate_scope_paths(
+    settings: Settings,
+    source_id: str,
+    season_profile: str,
+    theme: str,
+    mode: str,
+    subseason: str | None,
+) -> list[Path]:
+    candidates: list[Path] = []
+    canonical = _artifact_scope_path(settings, source_id, season_profile, theme, mode, subseason)
+    candidates.append(canonical)
+    canonical_pattern = f"*/{season_profile}/{theme}/{mode}"
+    if subseason:
+        canonical_pattern = f"{canonical_pattern}/{subseason.lower()}"
+    canonical_match = _unique_glob_match(settings.seasonal_map.artifact_dir, canonical_pattern)
+    if canonical_match is not None:
+        candidates.append(canonical_match)
+    if mode == "seasonal" and subseason is None:
+        legacy = _legacy_artifact_scope_path(settings, source_id, season_profile, theme)
+        candidates.append(legacy)
+        legacy_match = _unique_glob_match(settings.seasonal_map.artifact_dir, f"*/{season_profile}/{theme}")
+        if legacy_match is not None:
+            candidates.append(legacy_match)
+    deduped: list[Path] = []
+    seen: set[Path] = set()
+    for candidate in candidates:
+        if candidate in seen:
+            continue
+        seen.add(candidate)
+        deduped.append(candidate)
+    return deduped
+
+
+def _unique_glob_match(root: Path, pattern: str) -> Path | None:
+    matches = sorted(root.glob(pattern))
     if len(matches) == 1:
         return matches[0]
-    return preferred
+    return None
+
+
+def _discover_latest_product_path(
+    settings: Settings,
+    source_id: str,
+    season_profile: str,
+    theme: str,
+    mode: str,
+    subseason: str | None,
+) -> Path | None:
+    candidates: list[Path] = []
+    for scope in _candidate_scope_paths(settings, source_id, season_profile, theme, mode, subseason):
+        runs_dir = scope / "runs"
+        if not runs_dir.exists():
+            continue
+        candidates.extend(sorted(runs_dir.glob("*/product.json")))
+    if not candidates:
+        return None
+    return max(candidates, key=lambda path: path.parent.name)
+
+
+def _resolve_product_path(
+    pointer: dict[str, Any],
+    *,
+    settings: Settings,
+    source_id: str,
+    season_profile: str,
+    theme: str,
+    mode: str,
+    subseason: str | None,
+) -> Path:
+    product_path = pointer.get("product_path")
+    if product_path:
+        resolved = Path(str(product_path)).resolve()
+        if resolved.exists():
+            return resolved
+    manifest_path = pointer.get("manifest_path")
+    if manifest_path:
+        manifest_product = Path(str(manifest_path)).resolve().parent / "product.json"
+        if manifest_product.exists():
+            return manifest_product
+    product_id = pointer.get("product_id")
+    if product_id:
+        for scope in _candidate_scope_paths(settings, source_id, season_profile, theme, mode, subseason):
+            candidate = scope / "runs" / str(product_id) / "product.json"
+            if candidate.exists():
+                return candidate
+    discovered = _discover_latest_product_path(settings, source_id, season_profile, theme, mode, subseason)
+    if discovered is not None:
+        return discovered
+    raise SeasonalMapArtifactsNotAvailableError("Seasonal map active pointer is incomplete.")
+
+
+def _normalize_product_payload(
+    payload: dict[str, Any],
+    *,
+    source_id: str,
+    theme: str,
+    season_profile: str,
+    mode: str,
+    subseason: str | None,
+) -> dict[str, Any]:
+    normalized = dict(payload)
+    normalized["theme"] = str(normalized.get("theme") or theme)
+    normalized["season_profile"] = str(normalized.get("season_profile") or season_profile)
+    normalized["mode"] = mode
+    normalized["subseason"] = subseason
+    normalized["mode_label"] = MODE_LABELS[mode]
+    normalized["subseason_label"] = subseason
+    normalized.setdefault("forecast_source", source_id)
+    normalized.setdefault("forecast_source_label", _forecast_source_label(str(normalized["forecast_source"])))
+    normalized.setdefault("source_run_id", "unknown")
+    normalized.setdefault("refresh_interval_seconds", 1800)
+    normalized.setdefault("freshness_threshold_hours", 18)
+    normalized.setdefault("legend", [])
+    normalized.setdefault("district_items", [])
+    normalized.setdefault("region_items", [])
+    normalized.setdefault("district_count", len(normalized["district_items"]))
+    normalized.setdefault("region_count", len(normalized["region_items"]))
+    return normalized

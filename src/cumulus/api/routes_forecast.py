@@ -6,6 +6,7 @@ from datetime import datetime, UTC
 
 from fastapi import APIRouter, HTTPException
 
+from cumulus.api.errors import CumulusServiceError
 from cumulus.schemas import ForecastRequest, ForecastResponse, PointRequest, PredictResponse
 from cumulus.services.forecast_service import generate_forecast
 from cumulus.services.prediction_service import build_predict_response, predict_for_point
@@ -35,6 +36,8 @@ def forecast_endpoint(request: ForecastRequest) -> ForecastResponse:
         )
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except CumulusServiceError:
+        raise
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return ForecastResponse(
@@ -45,5 +48,6 @@ def forecast_endpoint(request: ForecastRequest) -> ForecastResponse:
         data_origin=metadata.get("data_origin"),
         source_run_id=metadata.get("source_run_id"),
         calibration_version=metadata.get("calibration_version"),
+        seasonal_refresh=metadata.get("seasonal_refresh"),
         results=results,
     )

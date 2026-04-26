@@ -4,12 +4,18 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Query
 
-from cumulus.schemas import SeasonalMapOptionsResponse, SeasonalMapProductResponse, SeasonalMapRunResponse
+from cumulus.schemas import (
+    SeasonalMapOptionsResponse,
+    SeasonalMapProductResponse,
+    SeasonalMapRefreshResponse,
+    SeasonalMapRunResponse,
+)
 from cumulus.services.seasonal_map_service import (
     generate_seasonal_map_product,
     get_active_seasonal_map_product,
     get_seasonal_map_options,
     list_supported_season_profiles,
+    refresh_seasonal_map_products,
 )
 from cumulus.settings import get_settings
 
@@ -52,6 +58,25 @@ def seasonal_map_active_endpoint(
         forecast_source=forecast_source,
     )
     return SeasonalMapProductResponse(**payload)
+
+
+@router.post("/seasonal-map/refresh", response_model=SeasonalMapRefreshResponse)
+def seasonal_map_refresh_endpoint(
+    theme: str | None = Query(default=None),
+    season_profile: str | None = Query(default=None),
+    mode: str | None = Query(default=None),
+    subseason: str | None = Query(default=None),
+    forecast_source: str | None = Query(default=None),
+) -> SeasonalMapRefreshResponse:
+    payload = refresh_seasonal_map_products(
+        get_settings(),
+        theme=theme,
+        season_profile=season_profile,
+        mode=mode,
+        subseason=subseason,
+        forecast_source=forecast_source,
+    )
+    return SeasonalMapRefreshResponse(**payload)
 
 
 @router.get("/seasonal-map/profiles", response_model=list[str])

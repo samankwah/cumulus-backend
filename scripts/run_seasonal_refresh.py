@@ -5,7 +5,11 @@ from __future__ import annotations
 import argparse
 import json
 
-from cumulus.services.seasonal_map_service import generate_all_seasonal_map_products, generate_seasonal_map_product
+from _bootstrap import bootstrap
+
+bootstrap()
+
+from cumulus.services.seasonal_map_service import generate_seasonal_map_product, refresh_seasonal_map_products
 from cumulus.settings import get_settings
 
 
@@ -21,19 +25,30 @@ def main() -> None:
         default=None,
         help="One of onset, cessation, early_dry_spell, late_dry_spell, rainfall_amount, rainy_days.",
     )
+    parser.add_argument("--mode", default=None, help="Optional mode filter: seasonal or calendar.")
+    parser.add_argument("--subseason", default=None, help="Optional calendar subseason filter such as MAM or SON.")
     parser.add_argument("--forecast-source", default=None)
     args = parser.parse_args()
 
     settings = get_settings()
-    if args.theme and args.season_profile:
+    if args.theme and args.season_profile and args.mode:
         payload = generate_seasonal_map_product(
             settings,
             args.theme,
             args.season_profile,
+            mode=args.mode,
+            subseason=args.subseason,
             forecast_source=args.forecast_source,
         )
     else:
-        payload = generate_all_seasonal_map_products(settings, forecast_source=args.forecast_source)
+        payload = refresh_seasonal_map_products(
+            settings,
+            theme=args.theme,
+            season_profile=args.season_profile,
+            mode=args.mode,
+            subseason=args.subseason,
+            forecast_source=args.forecast_source,
+        )
     print(json.dumps(payload, indent=2, default=str))
 
 

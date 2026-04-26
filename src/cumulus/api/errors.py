@@ -55,6 +55,11 @@ class SeasonalMapArtifactsNotAvailableError(CumulusServiceError):
     error_code = "seasonal_map_artifacts_not_available"
 
 
+class SeasonalMapRefreshFailedError(CumulusServiceError):
+    status_code = 500
+    error_code = "seasonal_map_refresh_failed"
+
+
 class InvalidSeasonalModeError(CumulusServiceError):
     status_code = 422
     error_code = "invalid_seasonal_mode"

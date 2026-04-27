@@ -5,13 +5,15 @@ from __future__ import annotations
 from fastapi import APIRouter, Query
 
 from cumulus.schemas import (
+    SeasonalDeterministicMapProductResponse,
     SeasonalMapOptionsResponse,
-    SeasonalMapProductResponse,
+    SeasonalProbabilityMapProductResponse,
     SeasonalMapRefreshResponse,
     SeasonalMapRunResponse,
 )
 from cumulus.services.seasonal_map_service import (
     generate_seasonal_map_product,
+    get_active_deterministic_seasonal_map_product,
     get_active_seasonal_map_product,
     get_seasonal_map_options,
     list_supported_season_profiles,
@@ -41,14 +43,14 @@ def seasonal_map_generate_endpoint(
     return SeasonalMapRunResponse(**payload)
 
 
-@router.get("/seasonal-map/active", response_model=SeasonalMapProductResponse)
+@router.get("/seasonal-map/active", response_model=SeasonalProbabilityMapProductResponse)
 def seasonal_map_active_endpoint(
     theme: str = Query(...),
     season_profile: str = Query(...),
     mode: str = Query(...),
     subseason: str | None = Query(default=None),
     forecast_source: str | None = Query(default=None),
-) -> SeasonalMapProductResponse:
+) -> SeasonalProbabilityMapProductResponse:
     payload = get_active_seasonal_map_product(
         get_settings(),
         theme,
@@ -57,7 +59,26 @@ def seasonal_map_active_endpoint(
         subseason=subseason,
         forecast_source=forecast_source,
     )
-    return SeasonalMapProductResponse(**payload)
+    return SeasonalProbabilityMapProductResponse(**payload)
+
+
+@router.get("/seasonal-map/deterministic/active", response_model=SeasonalDeterministicMapProductResponse)
+def seasonal_map_deterministic_active_endpoint(
+    theme: str = Query(...),
+    season_profile: str = Query(...),
+    mode: str = Query(...),
+    subseason: str | None = Query(default=None),
+    forecast_source: str | None = Query(default=None),
+) -> SeasonalDeterministicMapProductResponse:
+    payload = get_active_deterministic_seasonal_map_product(
+        get_settings(),
+        theme,
+        season_profile,
+        mode=mode,
+        subseason=subseason,
+        forecast_source=forecast_source,
+    )
+    return SeasonalDeterministicMapProductResponse(**payload)
 
 
 @router.post("/seasonal-map/refresh", response_model=SeasonalMapRefreshResponse)

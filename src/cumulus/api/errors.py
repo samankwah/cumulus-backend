@@ -25,6 +25,11 @@ class InvalidHorizonError(CumulusServiceError):
     error_code = "invalid_horizon"
 
 
+class InvalidForecastRasterVariableError(CumulusServiceError):
+    status_code = 422
+    error_code = "invalid_forecast_raster_variable"
+
+
 class ForecastSourceNotConfiguredError(CumulusServiceError):
     status_code = 503
     error_code = "forecast_source_not_configured"
@@ -55,9 +60,34 @@ class SeasonalMapArtifactsNotAvailableError(CumulusServiceError):
     error_code = "seasonal_map_artifacts_not_available"
 
 
+class SeasonalProbabilityProductIncompleteError(CumulusServiceError):
+    status_code = 503
+    error_code = "seasonal_probability_product_incomplete"
+
+
 class SeasonalMapRefreshFailedError(CumulusServiceError):
     status_code = 500
     error_code = "seasonal_map_refresh_failed"
+
+
+class ForecastProductArtifactsNotAvailableError(CumulusServiceError):
+    status_code = 503
+    error_code = "forecast_product_artifacts_not_available"
+
+
+class ForecastProductIncompleteError(CumulusServiceError):
+    status_code = 503
+    error_code = "forecast_product_incomplete"
+
+
+class InvalidForecastProductThemeError(CumulusServiceError):
+    status_code = 422
+    error_code = "invalid_forecast_product_theme"
+
+
+class InvalidForecastProductSelectionError(CumulusServiceError):
+    status_code = 422
+    error_code = "invalid_forecast_product_selection"
 
 
 class InvalidSeasonalModeError(CumulusServiceError):

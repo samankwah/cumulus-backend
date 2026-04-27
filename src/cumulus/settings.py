@@ -20,12 +20,14 @@ from cumulus.utils.io import ensure_directory, load_yaml
 
 BACKEND_ROOT = Path(__file__).resolve().parents[2]
 WORKSPACE_ROOT = BACKEND_ROOT.parent
-TRAINING_ROOT = WORKSPACE_ROOT / "training"
+ML_ROOT = WORKSPACE_ROOT / "ml"
 DEFAULT_CONFIG_DIR = BACKEND_ROOT / "configs"
-DEFAULT_DATA_DIR = TRAINING_ROOT / "data"
+DEFAULT_DATA_DIR = ML_ROOT / "data"
 DEFAULT_NATIONWIDE_ARTIFACT_DIR = BACKEND_ROOT / "data" / "artifacts" / "nationwide"
 DEFAULT_SEASONAL_MAP_ARTIFACT_DIR = BACKEND_ROOT / "data" / "artifacts" / "seasonal_map"
+DEFAULT_FORECAST_PRODUCT_ARTIFACT_DIR = BACKEND_ROOT / "data" / "artifacts" / "forecast_products"
 DEFAULT_DISTRICT_GEOJSON_PATH = WORKSPACE_ROOT / "frontend" / "public" / "data" / "ghana_district_polygons_simplified.geojson"
+DEFAULT_FORECAST_PRODUCT_SOURCE_DIR = Path.home() / "Desktop" / "MEST_projects" / "wass2s" / "Agro_PRESAGG_2026_ic_1" / "forecasts"
 
 
 class BiasCorrectionConfig(BaseModel):
@@ -149,6 +151,63 @@ class SeasonalMapConfig(BaseModel):
     profiles: dict[str, SeasonalProfileConfig] = Field(default_factory=dict)
 
 
+class ForecastProductSourceConfig(BaseModel):
+    theme: str
+    deterministic_path: Path | None = None
+    probability_path: Path | None = None
+    preview_path: Path | None = None
+    forecast_year: int
+    title: str
+
+
+class ForecastProductConfig(BaseModel):
+    artifact_dir: Path = DEFAULT_FORECAST_PRODUCT_ARTIFACT_DIR
+    refresh_interval_seconds: int = 1800
+    freshness_threshold_hours: int = 18
+    source_label: str = "Cumulus Bridge Product"
+    generation_backend: str = "bridge_generated"
+    products: dict[str, ForecastProductSourceConfig] = Field(
+        default_factory=lambda: {
+            "onset": ForecastProductSourceConfig(
+                theme="onset",
+                deterministic_path=DEFAULT_FORECAST_PRODUCT_SOURCE_DIR / "Forecast_Det_PRCPOnset_2025.nc",
+                probability_path=DEFAULT_FORECAST_PRODUCT_SOURCE_DIR / "Forecast_Prob_PRCPOnset_2025.nc",
+                preview_path=DEFAULT_FORECAST_PRODUCT_SOURCE_DIR / "Consolidated Forecast Onset-2025.png",
+                forecast_year=2025,
+                title="Onset Date",
+            ),
+            "early_dry_spell": ForecastProductSourceConfig(
+                theme="early_dry_spell",
+                deterministic_path=DEFAULT_FORECAST_PRODUCT_SOURCE_DIR / "Forecast_Det_PRCPdryspellonset_2025.nc",
+                probability_path=DEFAULT_FORECAST_PRODUCT_SOURCE_DIR / "Forecast_Prob_PRCPdryspellonset_2025.nc",
+                preview_path=DEFAULT_FORECAST_PRODUCT_SOURCE_DIR / "Consolidated Forecast dryspellonset-2025.png",
+                forecast_year=2025,
+                title="Early-Season Dry Spell",
+            ),
+            "cessation": ForecastProductSourceConfig(
+                theme="cessation",
+                forecast_year=2025,
+                title="Cessation Date",
+            ),
+            "late_dry_spell": ForecastProductSourceConfig(
+                theme="late_dry_spell",
+                forecast_year=2025,
+                title="Late-Season Dry Spell",
+            ),
+            "rainfall_amount": ForecastProductSourceConfig(
+                theme="rainfall_amount",
+                forecast_year=2025,
+                title="Seasonal Rainfall Total",
+            ),
+            "rainy_days": ForecastProductSourceConfig(
+                theme="rainy_days",
+                forecast_year=2025,
+                title="Number of Rainy Days",
+            ),
+        }
+    )
+
+
 class ModelParamsConfig(BaseModel):
     n_estimators: int = 300
     max_depth: int | None = 16
@@ -210,6 +269,7 @@ class Settings(BaseSettings):
     model: ModelConfig = Field(default_factory=ModelConfig)
     nationwide: NationwideConfig = Field(default_factory=NationwideConfig)
     seasonal_map: SeasonalMapConfig = Field(default_factory=SeasonalMapConfig)
+    forecast_products: ForecastProductConfig = Field(default_factory=ForecastProductConfig)
 
     @classmethod
     def from_sources(cls) -> "Settings":
@@ -241,6 +301,7 @@ class Settings(BaseSettings):
         ensure_directory(settings.evaluation_dir)
         ensure_directory(settings.nationwide.artifact_dir)
         ensure_directory(settings.seasonal_map.artifact_dir)
+        ensure_directory(settings.forecast_products.artifact_dir)
         ensure_directory(settings.data_dir / "processed")
         return settings
 

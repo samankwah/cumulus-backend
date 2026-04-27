@@ -12,7 +12,13 @@ import cumulus.services.forecast_service as forecast_service_module
 from cumulus.main import app
 from cumulus.modeling.predictor import clear_model_bundle_cache
 from cumulus.modeling.trainer import train_baseline_model
-from cumulus.services.seasonal_map_service import _load_district_catalog, clear_seasonal_map_cache
+from cumulus.services.seasonal_map_service import (
+    _build_legend,
+    _classify_cessation,
+    _classify_dry_spell,
+    _load_district_catalog,
+    clear_seasonal_map_cache,
+)
 from cumulus.settings import get_settings
 
 
@@ -328,6 +334,65 @@ def test_forecast_endpoint_surfaces_distinct_seasonal_refresh_failure(monkeypatc
     assert "seasonal map refresh failed" in payload["detail"].lower()
 
 
+def test_forecast_raster_metadata_endpoint_returns_expected_contract(monkeypatch, tmp_path):
+    _prepare_public_serving_stack(monkeypatch, tmp_path)
+    client = TestClient(app)
+
+    response = client.get("/forecast/raster?variable=rainfall_daily_mm&horizon_day=2")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["variable"] == "rainfall_daily_mm"
+    assert payload["variable_label"] == "Daily Rainfall"
+    assert payload["unit"] == "mm"
+    assert payload["horizon_day"] == 2
+    assert payload["forecast_source"] == "configured"
+    assert payload["forecast_source_label"] == "Configured Forecast Feed"
+    assert payload["source_run_id"].startswith("configured-")
+    assert payload["tile_url"].startswith("/forecast/raster/tiles/{z}/{x}/{y}.png?")
+    assert "variable=rainfall_daily_mm" in payload["tile_url"]
+    assert "horizon_day=2" in payload["tile_url"]
+    assert payload["lower_bound"] <= payload["upper_bound"]
+    assert payload["available_horizon_days"] == list(range(1, 13))
+    assert len(payload["legend_ticks"]) == 5
+    assert payload["color_ramp"][0]["offset"] == 0.0
+    assert payload["color_ramp"][-1]["offset"] == 1.0
+    assert len(payload["grid"]["latitudes"]) == 1
+    assert len(payload["grid"]["longitudes"]) == 1
+    assert payload["grid"]["values"][0][0] is not None
+
+
+def test_forecast_raster_sample_endpoint_returns_nearest_grid_metadata(monkeypatch, tmp_path):
+    _prepare_public_serving_stack(monkeypatch, tmp_path)
+    client = TestClient(app)
+
+    response = client.get("/forecast/raster/sample?latitude=5.6037&longitude=-0.1870&variable=temperature_c&horizon_day=1")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["variable"] == "temperature_c"
+    assert payload["variable_label"] == "Air Temperature"
+    assert payload["unit"] == "C"
+    assert payload["horizon_day"] == 1
+    assert payload["forecast_source"] == "configured"
+    assert payload["forecast_source_label"] == "Configured Forecast Feed"
+    assert payload["source_run_id"].startswith("configured-")
+    assert payload["nearest_latitude"] == 5.6
+    assert payload["nearest_longitude"] == -0.18
+    assert payload["value"] is not None
+
+
+def test_forecast_raster_tile_endpoint_serves_png(monkeypatch, tmp_path):
+    _prepare_public_serving_stack(monkeypatch, tmp_path)
+    client = TestClient(app)
+
+    response = client.get("/forecast/raster/tiles/6/31/29.png?variable=temperature_c&horizon_day=1")
+
+    assert response.status_code == 200
+    assert response.headers["content-type"] == "image/png"
+    assert response.content.startswith(b"\x89PNG\r\n\x1a\n")
+
+
 def test_farmer_advisory_endpoint():
     client = TestClient(app)
     response = client.post(
@@ -571,10 +636,102 @@ def test_seasonal_map_generation_and_active_endpoint(monkeypatch, tmp_path):
     assert payload["forecast_source_label"] == "Configured Forecast Feed"
     assert payload["refresh_status"] in {"fresh", "stale"}
     assert payload["legend"][0]["label"] == "Early"
-    assert payload["district_items"][0]["metric"]["theme"] == "onset"
-    assert payload["district_items"][0]["metric"]["category_label"] in {"Early", "Normal", "Late"}
-    assert payload["district_items"][0]["metric"]["criteria_note"].startswith("Detected from 15 Mar")
+    district_metric = payload["district_items"][0]["metric"]
+    assert district_metric["theme"] == "onset"
+    assert district_metric["category_label"] in {"Early", "Normal", "Late"}
+    assert district_metric["display_value"].endswith("%")
+    assert district_metric["unit"] == "percent"
+    assert district_metric["dominant_percentage"] >= 0
+    assert district_metric["category_probabilities"]
+    assert district_metric["criteria_note"].startswith("Detected from 15 Mar")
+    percentages = {item["category_code"]: item["percentage"] for item in district_metric["category_probabilities"]}
+    assert len(percentages) == 3
+    assert round(sum(percentages.values()), 1) == 100.0
+    assert district_metric["dominant_percentage"] == max(percentages.values())
+    assert percentages[district_metric["dominant_category_code"]] == district_metric["dominant_percentage"]
     assert payload["region_items"][0]["metric"]["theme"] == "onset"
+
+    deterministic_active = client.get(
+        "/seasonal-map/deterministic/active?theme=onset&season_profile=northern_single&mode=seasonal"
+    )
+    assert deterministic_active.status_code == 200
+    deterministic_payload = deterministic_active.json()
+    assert deterministic_payload["product_id"] == manifest["product_id"]
+    assert deterministic_payload["district_items"][0]["metric"]["display_value"]
+    assert deterministic_payload["district_items"][0]["metric"]["unit"] == "days_from_reference"
+    assert "legend_label" in deterministic_payload["district_items"][0]["metric"]
+
+
+@pytest.mark.parametrize("theme", ["early_dry_spell", "late_dry_spell"])
+def test_seasonal_map_active_dry_spell_products_serve_whole_day_display_values(monkeypatch, tmp_path, theme):
+    _prepare_public_serving_stack(monkeypatch, tmp_path)
+    client = TestClient(app)
+
+    generate = client.post(f"/seasonal-map/generate?theme={theme}&season_profile=southern_major&mode=seasonal")
+    assert generate.status_code == 200
+
+    active = client.get(f"/seasonal-map/deterministic/active?theme={theme}&season_profile=southern_major&mode=seasonal")
+    assert active.status_code == 200
+    payload = active.json()
+    metrics = [item["metric"] for item in payload["district_items"]] + [item["metric"] for item in payload["region_items"]]
+
+    assert metrics
+    assert all(metric["unit"] == "days" for metric in metrics)
+    assert all(metric["display_value"] == f"{int(round(metric['value']))} day(s)" for metric in metrics)
+
+
+def test_seasonal_map_active_early_dry_spell_products_are_not_universally_zero(monkeypatch, tmp_path):
+    _prepare_public_serving_stack(monkeypatch, tmp_path)
+    client = TestClient(app)
+
+    generate = client.post("/seasonal-map/generate?theme=early_dry_spell&season_profile=southern_major&mode=seasonal")
+    assert generate.status_code == 200
+
+    active = client.get("/seasonal-map/deterministic/active?theme=early_dry_spell&season_profile=southern_major&mode=seasonal")
+    assert active.status_code == 200
+    payload = active.json()
+    district_values = [item["metric"]["value"] for item in payload["district_items"]]
+    region_values = [item["metric"]["value"] for item in payload["region_items"]]
+
+    assert district_values
+    assert region_values
+    assert any(value > 0 for value in district_values)
+    assert any(value > 0 for value in region_values)
+    assert not all(value == 0 for value in district_values)
+
+
+def test_seasonal_map_active_rainy_day_products_serve_whole_day_display_values(monkeypatch, tmp_path):
+    _prepare_public_serving_stack(monkeypatch, tmp_path)
+    client = TestClient(app)
+
+    generate = client.post("/seasonal-map/generate?theme=rainy_days&season_profile=southern_major&mode=calendar&subseason=MAM")
+    assert generate.status_code == 200
+
+    active = client.get(
+        "/seasonal-map/deterministic/active?theme=rainy_days&season_profile=southern_major&mode=calendar&subseason=MAM"
+    )
+    assert active.status_code == 200
+    payload = active.json()
+    metrics = [item["metric"] for item in payload["district_items"]] + [item["metric"] for item in payload["region_items"]]
+
+    assert metrics
+    assert all(metric["unit"] == "days" for metric in metrics)
+    assert all(metric["display_value"] == f"{int(round(metric['value']))} day(s)" for metric in metrics)
+
+
+def test_cessation_legend_and_metric_use_late_is_wet_color_semantics():
+    get_settings.cache_clear()
+    profile = get_settings().seasonal_map.profiles["southern_major"]
+
+    legend = _build_legend("cessation", "seasonal", profile)
+    metric_early = _classify_cessation(-10.0, profile, pd.Timestamp("2026-04-26T00:00:00Z").to_pydatetime())
+    metric_late = _classify_cessation(10.0, profile, pd.Timestamp("2026-04-26T00:00:00Z").to_pydatetime())
+
+    assert [item["color"] for item in legend] == ["#b47a34", "#b8b9b4", "#2f8f86"]
+    assert metric_early["category_code"] == "early"
+    assert metric_early["color"] == "#b47a34"
+    assert metric_late["category_code"] == "late"
+    assert metric_late["color"] == "#2f8f86"
 
 
 def test_seasonal_map_refresh_endpoint_generates_full_valid_matrix(monkeypatch, tmp_path):
@@ -711,6 +868,101 @@ def test_regime_bound_themes_only_return_in_profile_footprint_for_northern_profi
     assert mixed_region["coverage_count"] == north_region_totals[mixed_region_name]
     assert mixed_region["coverage_count"] < region_totals[mixed_region_name]
     assert "in-footprint district outputs" in mixed_region["coverage_note"]
+
+
+@pytest.mark.parametrize(
+    (
+        "theme",
+        "value",
+        "moderate_days",
+        "high_days",
+        "expected_code",
+        "expected_label",
+        "expected_numeric_value",
+        "expected_display_value",
+        "expected_note",
+    ),
+    [
+        (
+            "early_dry_spell",
+            4.0,
+            5,
+            8,
+            "low",
+            "Short",
+            4,
+            "4 day(s)",
+            "Longest dry run from onset to day 50. Onset criterion uses cumulative rainfall >= 20 mm, dry-day threshold < 1 mm, end-search 15 May, and nbjour: 50. Short below 5 days; Near-Normal from 5 to under 8; Long from 8 days upward.",
+        ),
+        (
+            "early_dry_spell",
+            6.0,
+            5,
+            8,
+            "moderate",
+            "Near-Normal",
+            6,
+            "6 day(s)",
+            "Longest dry run from onset to day 50. Onset criterion uses cumulative rainfall >= 20 mm, dry-day threshold < 1 mm, end-search 15 May, and nbjour: 50. Short below 5 days; Near-Normal from 5 to under 8; Long from 8 days upward.",
+        ),
+        (
+            "late_dry_spell",
+            9.0,
+            6,
+            9,
+            "high",
+            "Long",
+            9,
+            "9 day(s)",
+            "Longest dry run from day 51 to cessation. Onset criterion uses cumulative rainfall >= 20 mm, dry-day threshold < 1 mm, end-search 15 May, and nbjour: 50. Short below 6 days; Near-Normal from 6 to under 9; Long from 9 days upward.",
+        ),
+        (
+            "late_dry_spell",
+            4.5,
+            6,
+            9,
+            "low",
+            "Short",
+            5,
+            "5 day(s)",
+            "Longest dry run from day 51 to cessation. Onset criterion uses cumulative rainfall >= 20 mm, dry-day threshold < 1 mm, end-search 15 May, and nbjour: 50. Short below 6 days; Near-Normal from 6 to under 9; Long from 9 days upward.",
+        ),
+    ],
+)
+def test_dry_spell_classification_uses_short_normal_long_labels(
+    theme,
+    value,
+    moderate_days,
+    high_days,
+    expected_code,
+    expected_label,
+    expected_numeric_value,
+    expected_display_value,
+    expected_note,
+):
+    metric = _classify_dry_spell(
+        theme=theme,
+        value=value,
+        moderate_days=moderate_days,
+        high_days=high_days,
+    )
+
+    assert metric["category_code"] == expected_code
+    assert metric["category_label"] == expected_label
+    assert metric["numeric_value"] == expected_numeric_value
+    assert metric["display_value"] == expected_display_value
+    assert metric["criteria_note"] == expected_note
+
+
+@pytest.mark.parametrize("theme", ["early_dry_spell", "late_dry_spell"])
+def test_dry_spell_legend_uses_short_normal_long_labels(theme):
+    get_settings.cache_clear()
+    profile = get_settings().seasonal_map.profiles["southern_major"]
+
+    legend = _build_legend(theme, "seasonal", profile)
+
+    assert [item["category_code"] for item in legend] == ["low", "moderate", "high"]
+    assert [item["label"] for item in legend] == ["Short", "Near-Normal", "Long"]
 
 
 @pytest.mark.parametrize("season_profile", ["southern_major", "southern_minor"])

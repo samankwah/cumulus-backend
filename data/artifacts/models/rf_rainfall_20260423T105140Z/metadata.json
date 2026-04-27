@@ -1,0 +1,242 @@
+{
+  "bias_comparison": {
+    "improvement_vs_raw": {
+      "mean_bias": {
+        "mae_delta": 0.006264807857698784,
+        "mean_bias_delta": -0.17455555448927995,
+        "rmse_delta": 0.010597502105862633
+      },
+      "quantile_mapping": {
+        "mae_delta": -0.25704923580013206,
+        "mean_bias_delta": -0.586294856328773,
+        "rmse_delta": -0.6594473623837311
+      }
+    },
+    "methods": {
+      "mean_bias": {
+        "metrics": {
+          "bias": 0.18502664900098256,
+          "mae": 0.7848690941767148,
+          "r2": 0.8357478642210046,
+          "rmse": 0.9317670634585229,
+          "wet_day_f1": 1.0,
+          "wet_day_precision": 1.0,
+          "wet_day_recall": 1.0
+        }
+      },
+      "quantile_mapping": {
+        "metrics": {
+          "bias": -0.5967659508404756,
+          "mae": 1.0481831378345456,
+          "r2": 0.5145781035778909,
+          "rmse": 1.6018119279481167,
+          "wet_day_f1": 0.7272727272727273,
+          "wet_day_precision": 1.0,
+          "wet_day_recall": 0.5714285714285714
+        }
+      },
+      "raw": {
+        "metrics": {
+          "bias": 0.010471094511702615,
+          "mae": 0.7911339020344136,
+          "r2": 0.8319903561886629,
+          "rmse": 0.9423645655643855,
+          "wet_day_f1": 1.0,
+          "wet_day_precision": 1.0,
+          "wet_day_recall": 1.0
+        }
+      }
+    },
+    "primary_metrics": [
+      "rmse",
+      "mae"
+    ],
+    "selected_bias_method": "mean_bias"
+  },
+  "bias_method": "mean_bias",
+  "created_at": "20260423T105140Z",
+  "date_ranges": {
+    "test": {
+      "end": "2024-02-17T00:00:00+00:00",
+      "locations": 1,
+      "rows": 7,
+      "start": "2024-02-11T00:00:00+00:00"
+    },
+    "train": {
+      "end": "2024-02-03T00:00:00+00:00",
+      "locations": 1,
+      "rows": 34,
+      "start": "2024-01-01T00:00:00+00:00"
+    },
+    "validation": {
+      "end": "2024-02-10T00:00:00+00:00",
+      "locations": 1,
+      "rows": 7,
+      "start": "2024-02-04T00:00:00+00:00"
+    }
+  },
+  "estimator": "random_forest",
+  "evaluation_paths": {
+    "distribution_summary_csv": "data\\artifacts\\evaluation\\rf_rainfall_20260423T105140Z\\distribution_summary.csv",
+    "distribution_summary_json": "data\\artifacts\\evaluation\\rf_rainfall_20260423T105140Z\\distribution_summary.json",
+    "metrics_json": "data\\artifacts\\evaluation\\rf_rainfall_20260423T105140Z\\metrics.json",
+    "predictions_csv": "data\\artifacts\\evaluation\\rf_rainfall_20260423T105140Z\\test_predictions.csv"
+  },
+  "feature_columns": [
+    "latitude",
+    "longitude",
+    "precip_mm",
+    "temp_c",
+    "wind_speed",
+    "month",
+    "day_of_year",
+    "week_of_year",
+    "month_sin",
+    "month_cos",
+    "doy_sin",
+    "doy_cos",
+    "rain_lag_1",
+    "rain_lag_3",
+    "rain_lag_7",
+    "rain_roll_3",
+    "rain_roll_7",
+    "rain_roll_14"
+  ],
+  "feature_importances": [
+    {
+      "feature": "rain_lag_1",
+      "importance": 0.35959583595927036
+    },
+    {
+      "feature": "rain_roll_3",
+      "importance": 0.273705403593511
+    },
+    {
+      "feature": "rain_lag_3",
+      "importance": 0.14691485574654645
+    },
+    {
+      "feature": "rain_roll_7",
+      "importance": 0.11726741106223108
+    },
+    {
+      "feature": "rain_lag_7",
+      "importance": 0.08408424410350447
+    },
+    {
+      "feature": "wind_speed",
+      "importance": 0.004577745616082658
+    },
+    {
+      "feature": "rain_roll_14",
+      "importance": 0.0036728865250492213
+    },
+    {
+      "feature": "doy_sin",
+      "importance": 0.0028424693723491335
+    },
+    {
+      "feature": "temp_c",
+      "importance": 0.002153879176810373
+    },
+    {
+      "feature": "week_of_year",
+      "importance": 0.0019404965720396794
+    },
+    {
+      "feature": "day_of_year",
+      "importance": 0.0018960584471559056
+    },
+    {
+      "feature": "precip_mm",
+      "importance": 0.0010130081496251802
+    },
+    {
+      "feature": "doy_cos",
+      "importance": 0.00033570567582434023
+    },
+    {
+      "feature": "latitude",
+      "importance": 0.0
+    },
+    {
+      "feature": "longitude",
+      "importance": 0.0
+    },
+    {
+      "feature": "month",
+      "importance": 0.0
+    },
+    {
+      "feature": "month_sin",
+      "importance": 0.0
+    },
+    {
+      "feature": "month_cos",
+      "importance": 0.0
+    }
+  ],
+  "metrics": {
+    "bias": 0.18502664900098256,
+    "mae": 0.7848690941767148,
+    "r2": 0.8357478642210046,
+    "rmse": 0.9317670634585229,
+    "wet_day_f1": 1.0,
+    "wet_day_precision": 1.0,
+    "wet_day_recall": 1.0
+  },
+  "model_version": "rf_rainfall_20260423T105140Z",
+  "raw_metrics": {
+    "bias": 0.010471094511702615,
+    "mae": 0.7911339020344136,
+    "r2": 0.8319903561886629,
+    "rmse": 0.9423645655643855,
+    "wet_day_f1": 1.0,
+    "wet_day_precision": 1.0,
+    "wet_day_recall": 1.0
+  },
+  "selected_bias_method": "mean_bias",
+  "target_column": "rainfall_mm",
+  "top_feature_importances": [
+    {
+      "feature": "rain_lag_1",
+      "importance": 0.35959583595927036
+    },
+    {
+      "feature": "rain_roll_3",
+      "importance": 0.273705403593511
+    },
+    {
+      "feature": "rain_lag_3",
+      "importance": 0.14691485574654645
+    },
+    {
+      "feature": "rain_roll_7",
+      "importance": 0.11726741106223108
+    },
+    {
+      "feature": "rain_lag_7",
+      "importance": 0.08408424410350447
+    },
+    {
+      "feature": "wind_speed",
+      "importance": 0.004577745616082658
+    },
+    {
+      "feature": "rain_roll_14",
+      "importance": 0.0036728865250492213
+    },
+    {
+      "feature": "doy_sin",
+      "importance": 0.0028424693723491335
+    },
+    {
+      "feature": "temp_c",
+      "importance": 0.002153879176810373
+    },
+    {
+      "feature": "week_of_year",
+      "importance": 0.0019404965720396794
+    }
+  ]
+}

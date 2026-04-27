@@ -1,0 +1,94 @@
+{
+  "bias_method": "mean_bias",
+  "date_ranges": {
+    "test": {
+      "end": "2024-02-17T00:00:00+00:00",
+      "locations": 1,
+      "rows": 7,
+      "start": "2024-02-11T00:00:00+00:00"
+    },
+    "train": {
+      "end": "2024-02-03T00:00:00+00:00",
+      "locations": 1,
+      "rows": 34,
+      "start": "2024-01-01T00:00:00+00:00"
+    },
+    "validation": {
+      "end": "2024-02-10T00:00:00+00:00",
+      "locations": 1,
+      "rows": 7,
+      "start": "2024-02-04T00:00:00+00:00"
+    }
+  },
+  "improvement_vs_raw": {
+    "mean_bias": {
+      "mae_delta": 0.006264807857698784,
+      "mean_bias_delta": -0.17455555448927995,
+      "rmse_delta": 0.010597502105862633
+    },
+    "quantile_mapping": {
+      "mae_delta": -0.25704923580013206,
+      "mean_bias_delta": -0.586294856328773,
+      "rmse_delta": -0.6594473623837311
+    }
+  },
+  "methods": {
+    "mean_bias": {
+      "metrics": {
+        "bias": 0.18502664900098256,
+        "mae": 0.7848690941767148,
+        "r2": 0.8357478642210046,
+        "rmse": 0.9317670634585229,
+        "wet_day_f1": 1.0,
+        "wet_day_precision": 1.0,
+        "wet_day_recall": 1.0
+      }
+    },
+    "quantile_mapping": {
+      "metrics": {
+        "bias": -0.5967659508404756,
+        "mae": 1.0481831378345456,
+        "r2": 0.5145781035778909,
+        "rmse": 1.6018119279481167,
+        "wet_day_f1": 0.7272727272727273,
+        "wet_day_precision": 1.0,
+        "wet_day_recall": 0.5714285714285714
+      }
+    },
+    "raw": {
+      "metrics": {
+        "bias": 0.010471094511702615,
+        "mae": 0.7911339020344136,
+        "r2": 0.8319903561886629,
+        "rmse": 0.9423645655643855,
+        "wet_day_f1": 1.0,
+        "wet_day_precision": 1.0,
+        "wet_day_recall": 1.0
+      }
+    }
+  },
+  "metrics": {
+    "bias": 0.18502664900098256,
+    "mae": 0.7848690941767148,
+    "r2": 0.8357478642210046,
+    "rmse": 0.9317670634585229,
+    "wet_day_f1": 1.0,
+    "wet_day_precision": 1.0,
+    "wet_day_recall": 1.0
+  },
+  "model_version": "rf_rainfall_20260423T105140Z",
+  "primary_metrics": {
+    "mae": 0.7848690941767148,
+    "rmse": 0.9317670634585229
+  },
+  "raw_metrics": {
+    "bias": 0.010471094511702615,
+    "mae": 0.7911339020344136,
+    "r2": 0.8319903561886629,
+    "rmse": 0.9423645655643855,
+    "wet_day_f1": 1.0,
+    "wet_day_precision": 1.0,
+    "wet_day_recall": 1.0
+  },
+  "selected_bias_method": "mean_bias"
+}

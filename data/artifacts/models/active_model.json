@@ -1,0 +1,6 @@
+{
+  "bias_path": "data\\artifacts\\bias\\rf_rainfall_20260423T105140Z\\bias.json",
+  "metadata_path": "data\\artifacts\\models\\rf_rainfall_20260423T105140Z\\metadata.json",
+  "model_path": "data\\artifacts\\models\\rf_rainfall_20260423T105140Z\\model.joblib",
+  "model_version": "rf_rainfall_20260423T105140Z"
+}

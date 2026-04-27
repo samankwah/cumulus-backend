@@ -90,7 +90,17 @@ def _active_url(theme: str, season_profile: str, mode: str, *, subseason: str | 
     return query
 
 
-def test_seasonal_mode_resolves_legacy_pointer_and_enriches_response(monkeypatch, tmp_path):
+def _deterministic_active_url(theme: str, season_profile: str, mode: str, *, subseason: str | None = None) -> str:
+    query = (
+        f"/seasonal-map/deterministic/active?theme={theme}&season_profile={season_profile}"
+        f"&mode={mode}&forecast_source=configured"
+    )
+    if subseason:
+        query = f"{query}&subseason={subseason}"
+    return query
+
+
+def test_probability_mode_rejects_legacy_pointer_without_explicit_percentages(monkeypatch, tmp_path):
     artifact_dir = _configure_artifact_dir(monkeypatch, tmp_path)
     product_id = "seasonal_configured_northern_single_onset_20260424T131444Z"
     product_path = artifact_dir / "configured" / "northern_single" / "onset" / "runs" / product_id / "product.json"
@@ -106,6 +116,28 @@ def test_seasonal_mode_resolves_legacy_pointer_and_enriches_response(monkeypatch
     client = TestClient(app)
     response = client.get(_active_url("onset", "northern_single", "seasonal"))
 
+    assert response.status_code == 503
+    payload = response.json()
+    assert payload["error_code"] == "seasonal_probability_product_incomplete"
+    assert "Explicit category percentages are required" in payload["detail"]
+
+
+def test_deterministic_mode_resolves_legacy_pointer_and_enriches_response(monkeypatch, tmp_path):
+    artifact_dir = _configure_artifact_dir(monkeypatch, tmp_path)
+    product_id = "seasonal_configured_northern_single_onset_20260424T131444Z"
+    product_path = artifact_dir / "configured" / "northern_single" / "onset" / "runs" / product_id / "product.json"
+    _write_json(product_path, _legacy_product(product_id, theme="onset", season_profile="northern_single"))
+    _write_json(
+        artifact_dir / "active_configured_northern_single_onset.json",
+        {
+            "product_id": product_id,
+            "product_path": str(product_path),
+        },
+    )
+
+    client = TestClient(app)
+    response = client.get(_deterministic_active_url("onset", "northern_single", "seasonal"))
+
     assert response.status_code == 200
     payload = response.json()
     assert payload["product_id"] == product_id
@@ -113,9 +145,11 @@ def test_seasonal_mode_resolves_legacy_pointer_and_enriches_response(monkeypatch
     assert payload["subseason"] is None
     assert payload["mode_label"] == "Seasonal"
     assert payload["subseason_label"] is None
+    assert payload["district_items"][0]["metric"]["display_value"] == "24 Mar"
+    assert payload["district_items"][0]["metric"]["legend_label"] == "Normal"
 
 
-def test_seasonal_mode_prefers_mode_aware_pointer_over_legacy_pointer(monkeypatch, tmp_path):
+def test_deterministic_mode_prefers_mode_aware_pointer_over_legacy_pointer(monkeypatch, tmp_path):
     artifact_dir = _configure_artifact_dir(monkeypatch, tmp_path)
     legacy_id = "seasonal_configured_northern_single_onset_20260424T131444Z"
     legacy_path = artifact_dir / "configured" / "northern_single" / "onset" / "runs" / legacy_id / "product.json"
@@ -149,13 +183,13 @@ def test_seasonal_mode_prefers_mode_aware_pointer_over_legacy_pointer(monkeypatc
     )
 
     client = TestClient(app)
-    response = client.get(_active_url("onset", "northern_single", "seasonal"))
+    response = client.get(_deterministic_active_url("onset", "northern_single", "seasonal"))
 
     assert response.status_code == 200
     assert response.json()["product_id"] == new_id
 
 
-def test_seasonal_mode_discovers_legacy_run_directory_without_pointer(monkeypatch, tmp_path):
+def test_deterministic_mode_discovers_legacy_run_directory_without_pointer(monkeypatch, tmp_path):
     artifact_dir = _configure_artifact_dir(monkeypatch, tmp_path)
     product_id = "seasonal_configured_southern_minor_rainfall_amount_20260424T131458Z"
     product_path = (
@@ -164,13 +198,14 @@ def test_seasonal_mode_discovers_legacy_run_directory_without_pointer(monkeypatc
     _write_json(product_path, _legacy_product(product_id, theme="rainfall_amount", season_profile="southern_minor"))
 
     client = TestClient(app)
-    response = client.get(_active_url("rainfall_amount", "southern_minor", "seasonal"))
+    response = client.get(_deterministic_active_url("rainfall_amount", "southern_minor", "seasonal"))
 
     assert response.status_code == 200
     payload = response.json()
     assert payload["product_id"] == product_id
     assert payload["mode"] == "seasonal"
     assert payload["mode_label"] == "Seasonal"
+    assert payload["district_items"][0]["metric"]["display_value"] == "320.4 mm"
 
 
 def test_calendar_mode_does_not_fall_back_to_legacy_seasonal_artifacts(monkeypatch, tmp_path):

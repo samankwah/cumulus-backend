@@ -8,6 +8,7 @@ from datetime import UTC, date, datetime, timedelta
 from functools import lru_cache
 import json
 import logging
+import math
 from pathlib import Path
 from typing import Any
 
@@ -17,6 +18,7 @@ from cumulus.api.errors import (
     InvalidSeasonalModeError,
     InvalidSubseasonForProfileError,
     SeasonalMapArtifactsNotAvailableError,
+    SeasonalProbabilityProductIncompleteError,
     SubseasonNotAllowedError,
     SubseasonRequiredError,
 )
@@ -69,6 +71,12 @@ THEME_LABELS = {
     "rainy_days": "Number of Rainy Days",
 }
 MODE_LABELS = {"seasonal": "Seasonal", "calendar": "Calendar"}
+
+WASS2S_PROBABILITY_FAMILY_COLORS = {
+    "teal": "#2f8f86",
+    "neutral": "#b8b9b4",
+    "brown": "#b47a34",
+}
 
 
 @dataclass(frozen=True)
@@ -169,7 +177,8 @@ def _build_seasonal_map_product(
 ) -> dict[str, Any]:
     generated_at = datetime.now(UTC)
     forecast_cycle = _build_forecast_cycle(predicted)
-    district_items: list[dict[str, Any]] = []
+    probability_district_items: list[dict[str, Any]] = []
+    deterministic_district_items: list[dict[str, Any]] = []
     district_metrics: list[dict[str, Any]] = []
     grouped = {
         str(location_id): frame.reset_index(drop=True)
@@ -181,18 +190,35 @@ def _build_seasonal_map_product(
         frame = grouped.get(district["location_id"], pd.DataFrame(columns=["time", "rainfall_corrected_mm"]))
         raw_metrics = _derive_raw_metrics(frame, district, profile, settings)
         district_metrics.append({"region_name": district["region_name"], **raw_metrics})
-        district_items.append(
-            _serialize_area_item(
+        coverage_note = _district_coverage_note(
+            district=district,
+            profile=profile,
+            theme=normalized_theme,
+        )
+        probability_district_items.append(
+            _serialize_probability_area_item(
                 geography_type="district",
                 geography_name=district["geography_name"],
                 region_name=district["region_name"],
                 location_id=district["location_id"],
                 coverage_count=1,
-                coverage_note=_district_coverage_note(
-                    district=district,
-                    profile=profile,
-                    theme=normalized_theme,
-                ),
+                coverage_note=coverage_note,
+                raw_metrics=raw_metrics,
+                theme=normalized_theme,
+                profile=profile,
+                mode=normalized_mode,
+                subseason=normalized_subseason,
+                generated_at=generated_at,
+            )
+        )
+        deterministic_district_items.append(
+            _serialize_deterministic_area_item(
+                geography_type="district",
+                geography_name=district["geography_name"],
+                region_name=district["region_name"],
+                location_id=district["location_id"],
+                coverage_count=1,
+                coverage_note=coverage_note,
                 raw_metrics=raw_metrics,
                 theme=normalized_theme,
                 profile=profile,
@@ -202,7 +228,7 @@ def _build_seasonal_map_product(
             )
         )
 
-    region_items = _build_region_items(
+    probability_region_items, deterministic_region_items = _build_region_items(
         district_metrics,
         theme=normalized_theme,
         profile=profile,
@@ -253,11 +279,20 @@ def _build_seasonal_map_product(
         "source_run_id": resolved_source.source_run_id,
         "refresh_interval_seconds": int(settings.seasonal_map.refresh_interval_minutes * 60),
         "freshness_threshold_hours": int(settings.seasonal_map.freshness_threshold_hours),
-        "district_count": len(district_items),
-        "region_count": len(region_items),
-        "legend": _build_legend(normalized_theme, normalized_mode, profile, normalized_subseason),
-        "district_items": district_items,
-        "region_items": region_items,
+        "district_count": len(probability_district_items),
+        "region_count": len(probability_region_items),
+        "legend": _build_probability_legend(normalized_theme, normalized_mode, profile, normalized_subseason),
+        "district_items": probability_district_items,
+        "region_items": probability_region_items,
+        "deterministic_legend": _build_deterministic_legend(
+            normalized_theme,
+            normalized_mode,
+            profile,
+            normalized_subseason,
+            generated_at,
+        ),
+        "deterministic_district_items": deterministic_district_items,
+        "deterministic_region_items": deterministic_region_items,
     }
     product_payload = {
         **base_payload,
@@ -443,6 +478,46 @@ def refresh_seasonal_map_products(
 
 
 def get_active_seasonal_map_product(
+    settings: Settings,
+    theme: str,
+    season_profile: str,
+    *,
+    mode: str,
+    subseason: str | None = None,
+    forecast_source: str | None = None,
+) -> dict[str, Any]:
+    payload = _load_active_product_payload(
+        settings,
+        theme,
+        season_profile,
+        mode=mode,
+        subseason=subseason,
+        forecast_source=forecast_source,
+    )
+    return _as_probability_product_payload(payload)
+
+
+def get_active_deterministic_seasonal_map_product(
+    settings: Settings,
+    theme: str,
+    season_profile: str,
+    *,
+    mode: str,
+    subseason: str | None = None,
+    forecast_source: str | None = None,
+) -> dict[str, Any]:
+    payload = _load_active_product_payload(
+        settings,
+        theme,
+        season_profile,
+        mode=mode,
+        subseason=subseason,
+        forecast_source=forecast_source,
+    )
+    return _as_deterministic_product_payload(payload)
+
+
+def _load_active_product_payload(
     settings: Settings,
     theme: str,
     season_profile: str,
@@ -829,12 +904,28 @@ def _build_synthetic_rainfall_series(
     east_west = max(-0.08, min(0.08, (longitude + 0.8) * 0.02))
     zone_alignment = _profile_alignment_factor(district["regime_zone"], profile.native_zone)
     base_scale = profile.rainfall_factor * zone_alignment * (1.0 + north_south + east_west)
+    dry_day_cap = settings.seasonal_map.dry_day_threshold_mm * 0.22
 
     values: list[float] = []
     for position, timestamp in enumerate(index):
         repeated_value = rainfall_values[position % len(rainfall_values)]
         weight = _seasonal_weight(timestamp, onset_start, cessation_start)
-        values.append(round(max(0.0, repeated_value * base_scale * weight), 3))
+        value = max(0.0, repeated_value * base_scale * weight)
+        values.append(
+            round(
+                _apply_intraseasonal_structure(
+                    value=value,
+                    timestamp=timestamp,
+                    onset_start=onset_start,
+                    cessation_start=cessation_start,
+                    latitude=latitude,
+                    longitude=longitude,
+                    profile=profile,
+                    dry_day_cap=dry_day_cap,
+                ),
+                3,
+            )
+        )
 
     if max(values, default=0.0) <= 0:
         values = [0.0 for _ in index]
@@ -853,6 +944,51 @@ def _seasonal_weight(timestamp: pd.Timestamp, onset_start: pd.Timestamp, cessati
         return 0.95 + (1.0 - abs(progress - 0.5) * 2.0) * 0.28
     days_after = max(0, (timestamp - cessation_start).days)
     return max(0.14, 0.92 - days_after * 0.02)
+
+
+def _apply_intraseasonal_structure(
+    *,
+    value: float,
+    timestamp: pd.Timestamp,
+    onset_start: pd.Timestamp,
+    cessation_start: pd.Timestamp,
+    latitude: float,
+    longitude: float,
+    profile: SeasonalProfileConfig,
+    dry_day_cap: float,
+) -> float:
+    season_day = (timestamp - onset_start).days
+    if season_day < 0:
+        return value
+
+    phase_shift = int(abs(latitude * 7 + longitude * 11)) % 7
+    early_dry_start = 18 + phase_shift
+    early_dry_length = max(
+        3,
+        min(
+            14,
+            profile.early_dry_spell_moderate_days
+            + int(abs(latitude - 7.0) * 1.6)
+            + (int(abs(longitude) * 10) % 3),
+        ),
+    )
+    if early_dry_start <= season_day < early_dry_start + early_dry_length:
+        return min(value * 0.08, dry_day_cap)
+
+    late_dry_start = max(54, int((cessation_start - onset_start).days * 0.62)) + (phase_shift // 2)
+    late_dry_length = max(
+        4,
+        min(
+            18,
+            profile.late_dry_spell_moderate_days
+            + int(abs(latitude - 7.0) * 1.3)
+            + (int(abs(longitude) * 10) % 4),
+        ),
+    )
+    if late_dry_start <= season_day < late_dry_start + late_dry_length:
+        return min(value * 0.18, dry_day_cap)
+
+    return value
 
 
 def _calendar_window_slice(series: pd.Series, subseason: str) -> pd.Series:
@@ -914,12 +1050,13 @@ def _build_region_items(
     mode: str,
     subseason: str | None,
     generated_at: datetime,
-) -> list[dict[str, Any]]:
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for metric in district_metrics:
         grouped[str(metric["region_name"])].append(metric)
 
-    items: list[dict[str, Any]] = []
+    probability_items: list[dict[str, Any]] = []
+    deterministic_items: list[dict[str, Any]] = []
     for region_name, metrics in sorted(grouped.items()):
         raw_metrics = {
             "onset_offset_days": _average(metrics, "onset_offset_days"),
@@ -938,19 +1075,20 @@ def _build_region_items(
             raw_metrics[f"calendar_rainfall_normal_mm_{suffix}"] = _average(metrics, f"calendar_rainfall_normal_mm_{suffix}")
             raw_metrics[f"calendar_rainy_days_count_{suffix}"] = _average(metrics, f"calendar_rainy_days_count_{suffix}")
             raw_metrics[f"calendar_rainy_days_normal_{suffix}"] = _average(metrics, f"calendar_rainy_days_normal_{suffix}")
-        items.append(
-            _serialize_area_item(
+        coverage_note = _region_coverage_note(
+            region_name=region_name,
+            coverage_count=len(metrics),
+            profile=profile,
+            theme=theme,
+        )
+        probability_items.append(
+            _serialize_probability_area_item(
                 geography_type="region",
                 geography_name=region_name,
                 region_name=region_name,
                 location_id=_slugify(region_name),
                 coverage_count=len(metrics),
-                coverage_note=_region_coverage_note(
-                    region_name=region_name,
-                    coverage_count=len(metrics),
-                    profile=profile,
-                    theme=theme,
-                ),
+                coverage_note=coverage_note,
                 raw_metrics=raw_metrics,
                 theme=theme,
                 profile=profile,
@@ -959,10 +1097,26 @@ def _build_region_items(
                 generated_at=generated_at,
             )
         )
-    return items
+        deterministic_items.append(
+            _serialize_deterministic_area_item(
+                geography_type="region",
+                geography_name=region_name,
+                region_name=region_name,
+                location_id=_slugify(region_name),
+                coverage_count=len(metrics),
+                coverage_note=coverage_note,
+                raw_metrics=raw_metrics,
+                theme=theme,
+                profile=profile,
+                mode=mode,
+                subseason=subseason,
+                generated_at=generated_at,
+            )
+        )
+    return probability_items, deterministic_items
 
 
-def _serialize_area_item(
+def _serialize_probability_area_item(
     *,
     geography_type: str,
     geography_name: str,
@@ -984,11 +1138,37 @@ def _serialize_area_item(
         "region_name": region_name,
         "coverage_count": coverage_count,
         "coverage_note": coverage_note,
-        "metric": _classify_metric(theme, raw_metrics, profile, mode, subseason, generated_at),
+        "metric": _build_probability_metric(theme, raw_metrics, profile, mode, subseason, generated_at),
     }
 
 
-def _classify_metric(
+def _serialize_deterministic_area_item(
+    *,
+    geography_type: str,
+    geography_name: str,
+    region_name: str,
+    location_id: str,
+    coverage_count: int,
+    coverage_note: str,
+    raw_metrics: dict[str, float],
+    theme: str,
+    profile: SeasonalProfileConfig,
+    mode: str,
+    subseason: str | None,
+    generated_at: datetime,
+) -> dict[str, Any]:
+    return {
+        "location_id": location_id,
+        "geography_type": geography_type,
+        "geography_name": geography_name,
+        "region_name": region_name,
+        "coverage_count": coverage_count,
+        "coverage_note": coverage_note,
+        "metric": _build_deterministic_metric(theme, raw_metrics, profile, mode, subseason, generated_at),
+    }
+
+
+def _build_deterministic_metric(
     theme: str,
     raw_metrics: dict[str, float],
     profile: SeasonalProfileConfig,
@@ -997,25 +1177,25 @@ def _classify_metric(
     generated_at: datetime,
 ) -> dict[str, Any]:
     if theme == "onset":
-        return _classify_onset(raw_metrics["onset_offset_days"], profile, generated_at)
+        return _build_deterministic_onset_metric(raw_metrics["onset_offset_days"], profile, generated_at)
     if theme == "cessation":
-        return _classify_cessation(raw_metrics["cessation_offset_days"], profile, generated_at)
+        return _build_deterministic_cessation_metric(raw_metrics["cessation_offset_days"], profile, generated_at)
     if theme == "early_dry_spell":
-        return _classify_dry_spell(
+        return _build_deterministic_dry_spell_metric(
             theme="early_dry_spell",
             value=raw_metrics["early_dry_spell_days"],
             moderate_days=profile.early_dry_spell_moderate_days,
             high_days=profile.early_dry_spell_high_days,
         )
     if theme == "late_dry_spell":
-        return _classify_dry_spell(
+        return _build_deterministic_dry_spell_metric(
             theme="late_dry_spell",
             value=raw_metrics["late_dry_spell_days"],
             moderate_days=profile.late_dry_spell_moderate_days,
             high_days=profile.late_dry_spell_high_days,
         )
     if theme == "rainfall_amount":
-        return _classify_rainfall_amount(
+        return _build_deterministic_rainfall_amount_metric(
             raw_metrics["rainfall_amount_mm"]
             if mode == "seasonal"
             else raw_metrics[f"calendar_rainfall_amount_mm_{str(subseason).lower()}"],
@@ -1027,7 +1207,7 @@ def _classify_metric(
             mode=mode,
             subseason=subseason,
         )
-    return _classify_rainy_days(
+    return _build_deterministic_rainy_days_metric(
         raw_metrics["rainy_days_count"]
         if mode == "seasonal"
         else raw_metrics[f"calendar_rainy_days_count_{str(subseason).lower()}"],
@@ -1039,6 +1219,289 @@ def _classify_metric(
         mode=mode,
         subseason=subseason,
     )
+
+
+def _build_probability_metric(
+    theme: str,
+    raw_metrics: dict[str, float],
+    profile: SeasonalProfileConfig,
+    mode: str,
+    subseason: str | None,
+    generated_at: datetime,
+) -> dict[str, Any]:
+    legend = _build_probability_legend(theme, mode, profile, subseason)
+    if theme == "onset":
+        band = max(float(profile.onset_normal_band_days), 1.0)
+        categories = _probability_categories_from_scores(
+            legend,
+            _soft_scores(
+                raw_metrics["onset_offset_days"],
+                centers=(-band * 1.6, 0.0, band * 1.6),
+                scale=max(band * 0.9, 1.0),
+            ),
+        )
+    elif theme == "cessation":
+        band = max(float(profile.cessation_normal_band_days), 1.0)
+        categories = _probability_categories_from_scores(
+            legend,
+            _soft_scores(
+                raw_metrics["cessation_offset_days"],
+                centers=(-band * 1.6, 0.0, band * 1.6),
+                scale=max(band * 0.9, 1.0),
+            ),
+        )
+    elif theme == "early_dry_spell":
+        categories = _probability_categories_from_scores(
+            legend,
+            _soft_scores(
+                raw_metrics["early_dry_spell_days"],
+                centers=(
+                    max(profile.early_dry_spell_moderate_days - 2.0, 1.0),
+                    (profile.early_dry_spell_moderate_days + profile.early_dry_spell_high_days) / 2.0,
+                    profile.early_dry_spell_high_days + 2.5,
+                ),
+                scale=max((profile.early_dry_spell_high_days - profile.early_dry_spell_moderate_days) * 0.9, 1.0),
+            ),
+        )
+    elif theme == "late_dry_spell":
+        categories = _probability_categories_from_scores(
+            legend,
+            _soft_scores(
+                raw_metrics["late_dry_spell_days"],
+                centers=(
+                    max(profile.late_dry_spell_moderate_days - 2.0, 1.0),
+                    (profile.late_dry_spell_moderate_days + profile.late_dry_spell_high_days) / 2.0,
+                    profile.late_dry_spell_high_days + 2.5,
+                ),
+                scale=max((profile.late_dry_spell_high_days - profile.late_dry_spell_moderate_days) * 0.9, 1.0),
+            ),
+        )
+    elif theme == "rainfall_amount":
+        normal_value = (
+            raw_metrics["rainfall_normal_mm"]
+            if mode == "seasonal"
+            else raw_metrics[f"calendar_rainfall_normal_mm_{str(subseason).lower()}"]
+        )
+        value = (
+            raw_metrics["rainfall_amount_mm"]
+            if mode == "seasonal"
+            else raw_metrics[f"calendar_rainfall_amount_mm_{str(subseason).lower()}"]
+        )
+        deviation_pct = ((value - normal_value) / max(normal_value, 1.0)) * 100.0
+        band = max(float(profile.rainfall_band_pct), 1.0)
+        categories = _probability_categories_from_scores(
+            legend,
+            _soft_scores(
+                deviation_pct,
+                centers=(-band * 1.5, 0.0, band * 1.5),
+                scale=max(band * 0.85, 1.0),
+            ),
+        )
+    else:
+        normal_value = (
+            raw_metrics["rainy_days_normal"]
+            if mode == "seasonal"
+            else raw_metrics[f"calendar_rainy_days_normal_{str(subseason).lower()}"]
+        )
+        value = (
+            raw_metrics["rainy_days_count"]
+            if mode == "seasonal"
+            else raw_metrics[f"calendar_rainy_days_count_{str(subseason).lower()}"]
+        )
+        band = max(float(profile.rainy_days_band), 1.0)
+        categories = _probability_categories_from_scores(
+            legend,
+            _soft_scores(
+                value - normal_value,
+                centers=(-band * 1.5, 0.0, band * 1.5),
+                scale=max(band * 0.85, 1.0),
+            ),
+        )
+
+    dominant = max(categories, key=lambda item: float(item["percentage"]))
+    deterministic_metric = _build_deterministic_metric(theme, raw_metrics, profile, mode, subseason, generated_at)
+    return {
+        "theme": theme,
+        "theme_label": THEME_LABELS[theme],
+        "category_code": dominant["category_code"],
+        "category_label": dominant["label"],
+        "dominant_category_code": dominant["category_code"],
+        "dominant_category_label": dominant["label"],
+        "dominant_percentage": dominant["percentage"],
+        "display_value": f"{int(round(float(dominant['percentage'])))}%",
+        "unit": "percent",
+        "criteria_note": deterministic_metric["criteria_note"],
+        "interpretation": (
+            f"{profile.label} probability favours {dominant['label'].lower()} at {float(dominant['percentage']):.1f}%."
+        ),
+        "color": dominant["color"],
+        "category_probabilities": categories,
+    }
+
+
+def _probability_categories_from_scores(
+    legend: list[dict[str, str]],
+    scores: tuple[float, float, float],
+) -> list[dict[str, Any]]:
+    percentages = _normalize_percentages(list(scores))
+    return [
+        {
+            "category_code": item["category_code"],
+            "label": item["label"],
+            "hint": item["hint"],
+            "color": item["color"],
+            "percentage": percentages[index],
+        }
+        for index, item in enumerate(legend)
+    ]
+
+
+def _soft_scores(value: float, *, centers: tuple[float, float, float], scale: float) -> tuple[float, float, float]:
+    resolved_scale = max(scale, 0.5)
+    scores = tuple(math.exp(-((value - center) ** 2) / (2.0 * (resolved_scale**2))) for center in centers)
+    return scores if any(score > 0 for score in scores) else (1.0, 1.0, 1.0)
+
+
+def _normalize_percentages(scores: list[float]) -> list[float]:
+    total = sum(scores)
+    if total <= 0:
+        return [33.4, 33.3, 33.3]
+    percentages = [round((score / total) * 100.0, 1) for score in scores]
+    delta = round(100.0 - sum(percentages), 1)
+    percentages[0] = round(percentages[0] + delta, 1)
+    return percentages
+
+
+def _build_deterministic_onset_metric(
+    offset_days: float,
+    profile: SeasonalProfileConfig,
+    generated_at: datetime,
+) -> dict[str, Any]:
+    classified = _classify_onset(offset_days, profile, generated_at)
+    return {
+        "theme": "onset",
+        "theme_label": THEME_LABELS["onset"],
+        "value": round(offset_days, 1),
+        "display_value": classified["display_value"],
+        "unit": classified["unit"],
+        "criteria_note": classified["criteria_note"],
+        "interpretation": f"{profile.label} detected onset date resolves to {classified['display_value']}.",
+        "legend_label": _deterministic_date_legend_label(
+            date(generated_at.year, profile.onset_reference_month, profile.onset_reference_day),
+            profile.onset_normal_band_days,
+            offset_days,
+        ),
+        "color": classified["color"],
+    }
+
+
+def _build_deterministic_cessation_metric(
+    offset_days: float,
+    profile: SeasonalProfileConfig,
+    generated_at: datetime,
+) -> dict[str, Any]:
+    classified = _classify_cessation(offset_days, profile, generated_at)
+    return {
+        "theme": "cessation",
+        "theme_label": THEME_LABELS["cessation"],
+        "value": round(offset_days, 1),
+        "display_value": classified["display_value"],
+        "unit": classified["unit"],
+        "criteria_note": classified["criteria_note"],
+        "interpretation": f"{profile.label} detected cessation date resolves to {classified['display_value']}.",
+        "legend_label": _deterministic_date_legend_label(
+            date(generated_at.year, profile.cessation_reference_month, profile.cessation_reference_day),
+            profile.cessation_normal_band_days,
+            offset_days,
+        ),
+        "color": classified["color"],
+    }
+
+
+def _build_deterministic_dry_spell_metric(*, theme: str, value: float, moderate_days: int, high_days: int) -> dict[str, Any]:
+    classified = _classify_dry_spell(
+        theme=theme,
+        value=value,
+        moderate_days=moderate_days,
+        high_days=high_days,
+    )
+    whole_days = int(round(value))
+    return {
+        "theme": theme,
+        "theme_label": THEME_LABELS[theme],
+        "value": round(value, 1),
+        "display_value": f"{whole_days} day(s)",
+        "unit": "days",
+        "criteria_note": classified["criteria_note"],
+        "interpretation": f"{THEME_LABELS[theme]} resolves to {whole_days} day(s) for this geography.",
+        "legend_label": classified["category_label"],
+        "color": classified["color"],
+    }
+
+
+def _build_deterministic_rainfall_amount_metric(
+    value: float,
+    normal_value: float,
+    band_pct: float,
+    profile: SeasonalProfileConfig,
+    *,
+    mode: str,
+    subseason: str | None,
+) -> dict[str, Any]:
+    classified = _classify_rainfall_amount(value, normal_value, band_pct, profile, mode=mode, subseason=subseason)
+    return {
+        "theme": "rainfall_amount",
+        "theme_label": THEME_LABELS["rainfall_amount"],
+        "value": round(value, 1),
+        "display_value": f"{value:.1f} mm",
+        "unit": "mm",
+        "criteria_note": classified["criteria_note"],
+        "interpretation": (
+            f"Detected rainfall total is {value:.1f} mm against a normal of {normal_value:.1f} mm."
+            if mode == "seasonal"
+            else f"Detected {subseason} rainfall total is {value:.1f} mm against a normal of {normal_value:.1f} mm."
+        ),
+        "legend_label": classified["category_label"],
+        "color": classified["color"],
+    }
+
+
+def _build_deterministic_rainy_days_metric(
+    value: float,
+    normal_value: float,
+    band: float,
+    profile: SeasonalProfileConfig,
+    *,
+    mode: str,
+    subseason: str | None,
+) -> dict[str, Any]:
+    classified = _classify_rainy_days(value, normal_value, band, profile, mode=mode, subseason=subseason)
+    whole_days = int(round(value))
+    return {
+        "theme": "rainy_days",
+        "theme_label": THEME_LABELS["rainy_days"],
+        "value": round(value, 1),
+        "display_value": f"{whole_days} day(s)",
+        "unit": "days",
+        "criteria_note": classified["criteria_note"],
+        "interpretation": (
+            f"Detected rainy-day count is {whole_days} day(s) against a normal of {normal_value:.1f} day(s)."
+            if mode == "seasonal"
+            else f"Detected {subseason} rainy-day count is {whole_days} day(s) against a normal of {normal_value:.1f} day(s)."
+        ),
+        "legend_label": classified["category_label"],
+        "color": classified["color"],
+    }
+
+
+def _deterministic_date_legend_label(reference_date: date, band_days: int, offset_days: float) -> str:
+    lower = reference_date - timedelta(days=band_days)
+    upper = reference_date + timedelta(days=band_days)
+    if offset_days < -band_days:
+        return f"Before {lower.strftime('%d %b')}"
+    if offset_days > band_days:
+        return f"After {upper.strftime('%d %b')}"
+    return f"{lower.strftime('%d %b')} to {upper.strftime('%d %b')}"
 
 
 def _classify_onset(offset_days: float, profile: SeasonalProfileConfig, generated_at: datetime) -> dict[str, Any]:
@@ -1054,7 +1517,7 @@ def _classify_onset(offset_days: float, profile: SeasonalProfileConfig, generate
         interpretation = f"{profile.label} onset is lagging the Ghana WMO timing band."
     else:
         category_code = "normal"
-        category_label = "Normal"
+        category_label = "Near-Normal"
         interpretation = f"{profile.label} onset stays within the Ghana WMO timing band."
     onset_phrase = (
         "20 mm in 3 consecutive days"
@@ -1071,8 +1534,8 @@ def _classify_onset(offset_days: float, profile: SeasonalProfileConfig, generate
         "unit": "days_from_reference",
         "criteria_note": (
             f"Detected from {date(generated_at.year, profile.onset_search_start_month, profile.onset_search_start_day).strftime('%d %b')} "
-            f"using {onset_phrase} and no dry spell longer than {profile.onset_guard_max_dry_spell_days} days in the next "
-            f"{profile.onset_guard_window_days} days."
+            f"with end-search on 15 May using {onset_phrase}, and no dry spell longer than "
+            f"{profile.onset_guard_max_dry_spell_days} days in the next {profile.onset_guard_window_days} days."
         ),
         "interpretation": interpretation,
         "color": _legend_color("onset", category_code),
@@ -1117,17 +1580,18 @@ def _classify_cessation(
 
 
 def _classify_dry_spell(*, theme: str, value: float, moderate_days: int, high_days: int) -> dict[str, Any]:
+    whole_days = int(value + 0.5)
     if value >= high_days:
         category_code = "high"
-        category_label = "High"
+        category_label = "Long"
         interpretation = f"{THEME_LABELS[theme]} pressure is elevated under the selected Ghana regime."
     elif value >= moderate_days:
         category_code = "moderate"
-        category_label = "Moderate"
+        category_label = "Near-Normal"
         interpretation = f"{THEME_LABELS[theme]} pressure is building and should be monitored."
     else:
         category_code = "low"
-        category_label = "Low"
+        category_label = "Short"
         interpretation = f"{THEME_LABELS[theme]} pressure remains limited in this regime run."
     window_note = "Longest dry run from onset to day 50." if theme == "early_dry_spell" else "Longest dry run from day 51 to cessation."
     return {
@@ -1135,12 +1599,14 @@ def _classify_dry_spell(*, theme: str, value: float, moderate_days: int, high_da
         "theme_label": THEME_LABELS[theme],
         "category_code": category_code,
         "category_label": category_label,
-        "numeric_value": round(value, 1),
-        "display_value": f"{value:.1f} day(s)",
+        "numeric_value": whole_days,
+        "display_value": f"{whole_days} day(s)",
         "unit": "days",
         "criteria_note": (
-            f"{window_note} Low below {moderate_days} days; Moderate from {moderate_days} to under {high_days}; "
-            f"High from {high_days} days upward."
+            f"{window_note} Onset criterion uses cumulative rainfall >= 20 mm, "
+            f"dry-day threshold < 1 mm, end-search 15 May, and nbjour: 50. "
+            f"Short below {moderate_days} days; Near-Normal from {moderate_days} to under {high_days}; "
+            f"Long from {high_days} days upward."
         ),
         "interpretation": interpretation,
         "color": _legend_color(theme, category_code),
@@ -1160,7 +1626,7 @@ def _classify_rainfall_amount(
     upper = normal_value * (1 + band_pct / 100)
     if value < lower:
         category_code = "below_normal"
-        category_label = "Below Normal"
+        category_label = "BELOW-AVERAGE"
         interpretation = (
             f"{profile.label} rainfall is below the expected onset-to-cessation total."
             if mode == "seasonal"
@@ -1168,7 +1634,7 @@ def _classify_rainfall_amount(
         )
     elif value > upper:
         category_code = "above_normal"
-        category_label = "Above Normal"
+        category_label = "ABOVE-AVERAGE"
         interpretation = (
             f"{profile.label} rainfall is above the expected onset-to-cessation total."
             if mode == "seasonal"
@@ -1176,7 +1642,7 @@ def _classify_rainfall_amount(
         )
     else:
         category_code = "near_normal"
-        category_label = "Near Normal"
+        category_label = "NEAR-AVERAGE"
         interpretation = (
             f"{profile.label} rainfall stays within the expected onset-to-cessation band."
             if mode == "seasonal"
@@ -1216,7 +1682,7 @@ def _classify_rainy_days(
     upper = normal_value + band
     if value < lower:
         category_code = "fewer"
-        category_label = "Fewer"
+        category_label = "BELOW-AVERAGE"
         interpretation = (
             f"{profile.label} rainy days are below the expected onset-to-cessation count."
             if mode == "seasonal"
@@ -1224,7 +1690,7 @@ def _classify_rainy_days(
         )
     elif value > upper:
         category_code = "more"
-        category_label = "More"
+        category_label = "ABOVE-AVERAGE"
         interpretation = (
             f"{profile.label} rainy days are above the expected onset-to-cessation count."
             if mode == "seasonal"
@@ -1232,7 +1698,7 @@ def _classify_rainy_days(
         )
     else:
         category_code = "normal"
-        category_label = "Normal"
+        category_label = "NEAR-AVERAGE"
         interpretation = (
             f"{profile.label} rainy days stay within the expected onset-to-cessation band."
             if mode == "seasonal"
@@ -1251,7 +1717,7 @@ def _classify_rainy_days(
         "category_code": category_code,
         "category_label": category_label,
         "numeric_value": round(value, 1),
-        "display_value": f"{value:.1f} day(s)",
+        "display_value": f"{int(round(value))} day(s)",
         "unit": "days",
         "criteria_note": criteria_note,
         "interpretation": interpretation,
@@ -1259,12 +1725,37 @@ def _classify_rainy_days(
     }
 
 
-def _build_legend(
+def _probability_reverse_scale(theme: str) -> bool:
+    return theme in {"onset", "early_dry_spell", "late_dry_spell"}
+
+
+def _legend_entry(
+    *,
+    category_code: str,
+    label: str,
+    hint: str,
+    color: str,
+    display_order: int,
+    reverse_probability_scale: bool,
+) -> dict[str, Any]:
+    return {
+        "category_code": category_code,
+        "label": label,
+        "hint": hint,
+        "color": color,
+        "family_label": label,
+        "display_order": display_order,
+        "reverse_probability_scale": reverse_probability_scale,
+    }
+
+
+def _build_probability_legend(
     theme: str,
     mode: str,
     profile: SeasonalProfileConfig,
     subseason: str | None = None,
-) -> list[dict[str, str]]:
+) -> list[dict[str, Any]]:
+    reverse_probability_scale = _probability_reverse_scale(theme)
     onset_phrase = (
         "20 mm in 3 consecutive days"
         if profile.onset_requires_consecutive_days
@@ -1272,163 +1763,265 @@ def _build_legend(
     )
     if theme == "onset":
         return [
-            {
-                "category_code": "early",
-                "label": "Early",
-                "hint": (
-                    f"Detected earlier than the {profile.label.lower()} WMO onset band after "
+            _legend_entry(
+                category_code="early",
+                label="Early",
+                hint=(
+                    f"Probability of onset arriving earlier than the {profile.label.lower()} WMO band after "
                     f"{date(2026, profile.onset_search_start_month, profile.onset_search_start_day).strftime('%d %b')}."
                 ),
-                "color": "#1f8a5b",
-            },
-            {
-                "category_code": "normal",
-                "label": "Normal",
-                "hint": f"Detected within the Ghana WMO onset band using {onset_phrase}.",
-                "color": "#c9962b",
-            },
-            {
-                "category_code": "late",
-                "label": "Late",
-                "hint": f"Detected later than the {profile.label.lower()} WMO onset band.",
-                "color": "#c65a46",
-            },
+                color=WASS2S_PROBABILITY_FAMILY_COLORS["teal"],
+                display_order=0,
+                reverse_probability_scale=reverse_probability_scale,
+            ),
+            _legend_entry(
+                category_code="normal",
+                label="Near-Normal",
+                hint=f"Probability of onset staying within the Ghana WMO timing band using {onset_phrase}.",
+                color=WASS2S_PROBABILITY_FAMILY_COLORS["neutral"],
+                display_order=1,
+                reverse_probability_scale=reverse_probability_scale,
+            ),
+            _legend_entry(
+                category_code="late",
+                label="Late",
+                hint="Probability of onset arriving later than the Ghana WMO timing band.",
+                color=WASS2S_PROBABILITY_FAMILY_COLORS["brown"],
+                display_order=2,
+                reverse_probability_scale=reverse_probability_scale,
+            ),
         ]
     if theme == "cessation":
         return [
-            {
-                "category_code": "early",
-                "label": "Early",
-                "hint": "Soil water balance depletes earlier than the regime timing band.",
-                "color": "#1f8a5b",
-            },
-            {
-                "category_code": "normal",
-                "label": "Normal",
-                "hint": "Soil water balance depletes within the regime timing band.",
-                "color": "#c9962b",
-            },
-            {
-                "category_code": "late",
-                "label": "Late",
-                "hint": "Soil water balance depletes later than the regime timing band.",
-                "color": "#c65a46",
-            },
+            _legend_entry(
+                category_code="early",
+                label="Early",
+                hint="Probability of soil water balance depleting earlier than the regime timing band.",
+                color=WASS2S_PROBABILITY_FAMILY_COLORS["brown"],
+                display_order=0,
+                reverse_probability_scale=reverse_probability_scale,
+            ),
+            _legend_entry(
+                category_code="normal",
+                label="Near-Normal",
+                hint="Probability of soil water balance depleting within the regime timing band.",
+                color=WASS2S_PROBABILITY_FAMILY_COLORS["neutral"],
+                display_order=1,
+                reverse_probability_scale=reverse_probability_scale,
+            ),
+            _legend_entry(
+                category_code="late",
+                label="Late",
+                hint="Probability of soil water balance depleting later than the regime timing band.",
+                color=WASS2S_PROBABILITY_FAMILY_COLORS["teal"],
+                display_order=2,
+                reverse_probability_scale=reverse_probability_scale,
+            ),
         ]
     if theme == "early_dry_spell":
         return [
-            {
-                "category_code": "low",
-                "label": "Low",
-                "hint": "Longest dry run from onset to day 50 remains limited.",
-                "color": "#2f8f6e",
-            },
-            {
-                "category_code": "moderate",
-                "label": "Moderate",
-                "hint": "Longest dry run from onset to day 50 needs monitoring.",
-                "color": "#c98b37",
-            },
-            {
-                "category_code": "high",
-                "label": "High",
-                "hint": "Longest dry run from onset to day 50 is elevated.",
-                "color": "#c45143",
-            },
+            _legend_entry(
+                category_code="low",
+                label="Short",
+                hint="Probability that the longest dry run from onset to day 50 remains short.",
+                color=WASS2S_PROBABILITY_FAMILY_COLORS["teal"],
+                display_order=0,
+                reverse_probability_scale=reverse_probability_scale,
+            ),
+            _legend_entry(
+                category_code="moderate",
+                label="Near-Normal",
+                hint="Probability that the longest dry run from onset to day 50 stays near the normal range.",
+                color=WASS2S_PROBABILITY_FAMILY_COLORS["neutral"],
+                display_order=1,
+                reverse_probability_scale=reverse_probability_scale,
+            ),
+            _legend_entry(
+                category_code="high",
+                label="Long",
+                hint="Probability that the longest dry run from onset to day 50 becomes long.",
+                color=WASS2S_PROBABILITY_FAMILY_COLORS["brown"],
+                display_order=2,
+                reverse_probability_scale=reverse_probability_scale,
+            ),
         ]
     if theme == "late_dry_spell":
         return [
-            {
-                "category_code": "low",
-                "label": "Low",
-                "hint": "Longest dry run from day 51 to cessation remains limited.",
-                "color": "#2f8f6e",
-            },
-            {
-                "category_code": "moderate",
-                "label": "Moderate",
-                "hint": "Longest dry run from day 51 to cessation needs monitoring.",
-                "color": "#c98b37",
-            },
-            {
-                "category_code": "high",
-                "label": "High",
-                "hint": "Longest dry run from day 51 to cessation is elevated.",
-                "color": "#c45143",
-            },
+            _legend_entry(
+                category_code="low",
+                label="Short",
+                hint="Probability that the longest dry run from day 51 to cessation remains short.",
+                color=WASS2S_PROBABILITY_FAMILY_COLORS["teal"],
+                display_order=0,
+                reverse_probability_scale=reverse_probability_scale,
+            ),
+            _legend_entry(
+                category_code="moderate",
+                label="Near-Normal",
+                hint="Probability that the longest dry run from day 51 to cessation stays near the normal range.",
+                color=WASS2S_PROBABILITY_FAMILY_COLORS["neutral"],
+                display_order=1,
+                reverse_probability_scale=reverse_probability_scale,
+            ),
+            _legend_entry(
+                category_code="high",
+                label="Long",
+                hint="Probability that the longest dry run from day 51 to cessation becomes long.",
+                color=WASS2S_PROBABILITY_FAMILY_COLORS["brown"],
+                display_order=2,
+                reverse_probability_scale=reverse_probability_scale,
+            ),
         ]
     if theme == "rainfall_amount":
         return [
-            {
-                "category_code": "below_normal",
-                "label": "Below Normal",
-                "hint": (
-                    "Detected seasonal rainfall is below the regime normal."
+            _legend_entry(
+                category_code="below_normal",
+                label="BELOW-AVERAGE",
+                hint=(
+                    "Probability that seasonal rainfall falls below the regime normal."
                     if mode == "seasonal"
-                    else f"Detected {subseason} rainfall is below the regime calendar normal."
+                    else f"Probability that {subseason} rainfall falls below the regime calendar normal."
                 ),
-                "color": "#c55a45",
-            },
-            {
-                "category_code": "near_normal",
-                "label": "Near Normal",
-                "hint": (
-                    "Detected seasonal rainfall stays within the regime normal band."
+                color=WASS2S_PROBABILITY_FAMILY_COLORS["brown"],
+                display_order=0,
+                reverse_probability_scale=reverse_probability_scale,
+            ),
+            _legend_entry(
+                category_code="near_normal",
+                label="NEAR-AVERAGE",
+                hint=(
+                    "Probability that seasonal rainfall stays within the regime normal band."
                     if mode == "seasonal"
-                    else f"Detected {subseason} rainfall stays within the regime calendar band."
+                    else f"Probability that {subseason} rainfall stays within the regime calendar band."
                 ),
-                "color": "#c9962b",
-            },
-            {
-                "category_code": "above_normal",
-                "label": "Above Normal",
-                "hint": (
-                    "Detected seasonal rainfall is above the regime normal."
+                color=WASS2S_PROBABILITY_FAMILY_COLORS["neutral"],
+                display_order=1,
+                reverse_probability_scale=reverse_probability_scale,
+            ),
+            _legend_entry(
+                category_code="above_normal",
+                label="ABOVE-AVERAGE",
+                hint=(
+                    "Probability that seasonal rainfall rises above the regime normal."
                     if mode == "seasonal"
-                    else f"Detected {subseason} rainfall is above the regime calendar normal."
+                    else f"Probability that {subseason} rainfall rises above the regime calendar normal."
                 ),
-                "color": "#1f8a5b",
-            },
+                color=WASS2S_PROBABILITY_FAMILY_COLORS["teal"],
+                display_order=2,
+                reverse_probability_scale=reverse_probability_scale,
+            ),
         ]
     return [
-        {
-            "category_code": "fewer",
-            "label": "Fewer",
-            "hint": (
-                "Rainy-day count is below the regime normal."
+        _legend_entry(
+            category_code="fewer",
+            label="BELOW-AVERAGE",
+            hint=(
+                "Probability that the rainy-day count stays below the regime normal."
                 if mode == "seasonal"
-                else f"Rainy-day count in {subseason} is below the regime calendar normal."
+                else f"Probability that the rainy-day count in {subseason} stays below the regime calendar normal."
             ),
-            "color": "#c55a45",
-        },
-        {
-            "category_code": "normal",
-            "label": "Normal",
-            "hint": (
-                "Rainy-day count stays within the regime normal band."
+            color=WASS2S_PROBABILITY_FAMILY_COLORS["brown"],
+            display_order=0,
+            reverse_probability_scale=reverse_probability_scale,
+        ),
+        _legend_entry(
+            category_code="normal",
+            label="NEAR-AVERAGE",
+            hint=(
+                "Probability that the rainy-day count stays within the regime normal band."
                 if mode == "seasonal"
-                else f"Rainy-day count in {subseason} stays within the regime calendar band."
+                else f"Probability that the rainy-day count in {subseason} stays within the regime calendar band."
             ),
-            "color": "#c9962b",
-        },
-        {
-            "category_code": "more",
-            "label": "More",
-            "hint": (
-                "Rainy-day count is above the regime normal."
+            color=WASS2S_PROBABILITY_FAMILY_COLORS["neutral"],
+            display_order=1,
+            reverse_probability_scale=reverse_probability_scale,
+        ),
+        _legend_entry(
+            category_code="more",
+            label="ABOVE-AVERAGE",
+            hint=(
+                "Probability that the rainy-day count rises above the regime normal."
                 if mode == "seasonal"
-                else f"Rainy-day count in {subseason} is above the regime calendar normal."
+                else f"Probability that the rainy-day count in {subseason} rises above the regime calendar normal."
             ),
-            "color": "#1f8a5b",
-        },
+            color=WASS2S_PROBABILITY_FAMILY_COLORS["teal"],
+            display_order=2,
+            reverse_probability_scale=reverse_probability_scale,
+        ),
+    ]
+
+
+def _build_deterministic_legend(
+    theme: str,
+    mode: str,
+    profile: SeasonalProfileConfig,
+    subseason: str | None,
+    generated_at: datetime,
+) -> list[dict[str, str]]:
+    if theme == "onset":
+        reference_date = date(generated_at.year, profile.onset_reference_month, profile.onset_reference_day)
+        lower = (reference_date - timedelta(days=profile.onset_normal_band_days)).strftime("%d %b")
+        upper = (reference_date + timedelta(days=profile.onset_normal_band_days)).strftime("%d %b")
+        return [
+            {"category_code": "early", "label": f"Before {lower}", "hint": "Detected onset date before the timing band.", "color": "#1f8a5b"},
+            {"category_code": "normal", "label": f"{lower} to {upper}", "hint": "Detected onset date within the timing band.", "color": "#c9962b"},
+            {"category_code": "late", "label": f"After {upper}", "hint": "Detected onset date after the timing band.", "color": "#c65a46"},
+        ]
+    if theme == "cessation":
+        reference_date = date(generated_at.year, profile.cessation_reference_month, profile.cessation_reference_day)
+        lower = (reference_date - timedelta(days=profile.cessation_normal_band_days)).strftime("%d %b")
+        upper = (reference_date + timedelta(days=profile.cessation_normal_band_days)).strftime("%d %b")
+        return [
+            {"category_code": "early", "label": f"Before {lower}", "hint": "Detected cessation date before the timing band.", "color": "#c65a46"},
+            {"category_code": "normal", "label": f"{lower} to {upper}", "hint": "Detected cessation date within the timing band.", "color": "#c9962b"},
+            {"category_code": "late", "label": f"After {upper}", "hint": "Detected cessation date after the timing band.", "color": "#1f8a5b"},
+        ]
+    if theme == "early_dry_spell":
+        return [
+            {"category_code": "low", "label": f"0 to {profile.early_dry_spell_moderate_days - 1} day(s)", "hint": "Detected early-season dry spell stays short.", "color": "#2f8f6e"},
+            {"category_code": "moderate", "label": f"{profile.early_dry_spell_moderate_days} to {profile.early_dry_spell_high_days - 1} day(s)", "hint": "Detected early-season dry spell stays near the normal range.", "color": "#c98b37"},
+            {"category_code": "high", "label": f"{profile.early_dry_spell_high_days}+ day(s)", "hint": "Detected early-season dry spell becomes long.", "color": "#c45143"},
+        ]
+    if theme == "late_dry_spell":
+        return [
+            {"category_code": "low", "label": f"0 to {profile.late_dry_spell_moderate_days - 1} day(s)", "hint": "Detected late-season dry spell stays short.", "color": "#2f8f6e"},
+            {"category_code": "moderate", "label": f"{profile.late_dry_spell_moderate_days} to {profile.late_dry_spell_high_days - 1} day(s)", "hint": "Detected late-season dry spell stays near the normal range.", "color": "#c98b37"},
+            {"category_code": "high", "label": f"{profile.late_dry_spell_high_days}+ day(s)", "hint": "Detected late-season dry spell becomes long.", "color": "#c45143"},
+        ]
+    if theme == "rainfall_amount":
+        normal_value = float(profile.rainfall_normal_mm)
+        lower = normal_value * (1 - profile.rainfall_band_pct / 100.0)
+        upper = normal_value * (1 + profile.rainfall_band_pct / 100.0)
+        label_prefix = "Seasonal" if mode == "seasonal" else str(subseason)
+        return [
+            {"category_code": "below_normal", "label": f"< {lower:.1f} mm", "hint": f"{label_prefix} rainfall total below the normal band.", "color": "#c55a45"},
+            {"category_code": "near_normal", "label": f"{lower:.1f} to {upper:.1f} mm", "hint": f"{label_prefix} rainfall total within the normal band.", "color": "#c9962b"},
+            {"category_code": "above_normal", "label": f"> {upper:.1f} mm", "hint": f"{label_prefix} rainfall total above the normal band.", "color": "#1f8a5b"},
+        ]
+    lower_days = profile.rainy_days_normal - profile.rainy_days_band
+    upper_days = profile.rainy_days_normal + profile.rainy_days_band
+    label_prefix = "Seasonal" if mode == "seasonal" else str(subseason)
+    return [
+        {"category_code": "fewer", "label": f"< {lower_days:.1f} day(s)", "hint": f"{label_prefix} rainy-day count below the normal band.", "color": "#c55a45"},
+        {"category_code": "normal", "label": f"{lower_days:.1f} to {upper_days:.1f} day(s)", "hint": f"{label_prefix} rainy-day count within the normal band.", "color": "#c9962b"},
+        {"category_code": "more", "label": f"> {upper_days:.1f} day(s)", "hint": f"{label_prefix} rainy-day count above the normal band.", "color": "#1f8a5b"},
     ]
 
 
 def _legend_color(theme: str, category_code: str) -> str:
-    for item in _build_legend(theme, "seasonal", _fallback_profile_for_legend()):
+    for item in _build_probability_legend(theme, "seasonal", _fallback_profile_for_legend()):
         if item["category_code"] == category_code:
             return item["color"]
     return "#75857b"
+
+
+def _build_legend(
+    theme: str,
+    mode: str,
+    profile: SeasonalProfileConfig,
+    subseason: str | None = None,
+) -> list[dict[str, Any]]:
+    return _build_probability_legend(theme, mode, profile, subseason)
 
 
 @lru_cache(maxsize=1)
@@ -1767,6 +2360,143 @@ def _normalize_product_payload(
     normalized.setdefault("legend", [])
     normalized.setdefault("district_items", [])
     normalized.setdefault("region_items", [])
+    normalized.setdefault("deterministic_legend", [])
+    normalized.setdefault("deterministic_district_items", [])
+    normalized.setdefault("deterministic_region_items", [])
     normalized.setdefault("district_count", len(normalized["district_items"]))
     normalized.setdefault("region_count", len(normalized["region_items"]))
+    normalized["legend"] = _upgrade_legacy_legend_items(normalized["legend"], theme)
+    normalized["deterministic_legend"] = _upgrade_legacy_legend_items(
+        normalized.get("deterministic_legend", []),
+        theme,
+    )
     return normalized
+
+
+def _upgrade_legacy_legend_items(items: Any, theme: str) -> list[dict[str, Any]]:
+    if not isinstance(items, list):
+        return []
+    reverse_probability_scale = _probability_reverse_scale(theme)
+    upgraded: list[dict[str, Any]] = []
+    for index, item in enumerate(items):
+        if not isinstance(item, dict):
+            continue
+        label = str(item.get("label", ""))
+        upgraded.append(
+            {
+                **item,
+                "family_label": str(item.get("family_label") or label),
+                "display_order": int(item.get("display_order", index)),
+                "reverse_probability_scale": bool(item.get("reverse_probability_scale", reverse_probability_scale)),
+            }
+        )
+    return upgraded
+
+
+def _as_probability_product_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    if _has_explicit_probability_payload(payload):
+        return payload
+
+    raise SeasonalProbabilityProductIncompleteError(
+        "Published probability product is unavailable or incomplete for this selection. "
+        "Explicit category percentages are required for probability mode."
+    )
+
+
+def _as_deterministic_product_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    deterministic_legend = payload.get("deterministic_legend")
+    deterministic_district_items = payload.get("deterministic_district_items")
+    deterministic_region_items = payload.get("deterministic_region_items")
+    if deterministic_legend and deterministic_district_items is not None and deterministic_region_items is not None:
+        return {
+            **payload,
+            "legend": deterministic_legend,
+            "district_items": deterministic_district_items,
+            "region_items": deterministic_region_items,
+        }
+
+    legacy_legend = payload.get("legend", [])
+    return {
+        **payload,
+        "legend": legacy_legend,
+        "district_items": [_legacy_deterministic_area_item(item) for item in payload.get("district_items", [])],
+        "region_items": [_legacy_deterministic_area_item(item) for item in payload.get("region_items", [])],
+    }
+
+
+def _has_explicit_probability_payload(payload: dict[str, Any]) -> bool:
+    legend = payload.get("legend")
+    district_items = payload.get("district_items")
+    region_items = payload.get("region_items")
+    return (
+        _is_probability_area_item_list(district_items, legend)
+        and _is_probability_area_item_list(region_items, legend)
+    )
+
+
+def _is_probability_area_item_list(items: Any, legend: Any) -> bool:
+    if not isinstance(items, list):
+        return False
+    return all(
+        isinstance(item, dict) and _is_explicit_probability_metric(item.get("metric"), legend)
+        for item in items
+    )
+
+
+def _is_explicit_probability_metric(metric: Any, legend: Any) -> bool:
+    if not isinstance(metric, dict):
+        return False
+    categories = metric.get("category_probabilities")
+    if not isinstance(categories, list) or not categories:
+        return False
+    if not all(_is_probability_category(item) for item in categories):
+        return False
+    if not isinstance(metric.get("dominant_percentage"), (int, float)):
+        return False
+    dominant = max(categories, key=lambda item: float(item["percentage"]))
+    if str(metric.get("dominant_category_code")) != str(dominant["category_code"]):
+        return False
+    if str(metric.get("dominant_category_label")) != str(dominant["label"]):
+        return False
+    if str(metric.get("category_code")) != str(dominant["category_code"]):
+        return False
+    if str(metric.get("category_label")) != str(dominant["label"]):
+        return False
+    if not math.isclose(float(metric["dominant_percentage"]), float(dominant["percentage"]), abs_tol=0.1):
+        return False
+    total = sum(float(item["percentage"]) for item in categories)
+    if not math.isclose(total, 100.0, abs_tol=0.2):
+        return False
+    if isinstance(legend, list) and legend:
+        legend_codes = [str(item.get("category_code")) for item in legend if isinstance(item, dict)]
+        category_codes = [str(item["category_code"]) for item in categories]
+        if legend_codes != category_codes:
+            return False
+    return True
+
+
+def _is_probability_category(category: Any) -> bool:
+    return (
+        isinstance(category, dict)
+        and isinstance(category.get("category_code"), str)
+        and isinstance(category.get("label"), str)
+        and isinstance(category.get("hint"), str)
+        and isinstance(category.get("color"), str)
+        and isinstance(category.get("percentage"), (int, float))
+    )
+
+
+def _legacy_deterministic_area_item(item: dict[str, Any]) -> dict[str, Any]:
+    metric = dict(item.get("metric") or {})
+    upgraded_metric = {
+        "theme": metric.get("theme"),
+        "theme_label": metric.get("theme_label"),
+        "value": metric.get("numeric_value"),
+        "display_value": metric.get("display_value", ""),
+        "unit": metric.get("unit"),
+        "criteria_note": metric.get("criteria_note", ""),
+        "interpretation": metric.get("interpretation", ""),
+        "legend_label": metric.get("category_label", ""),
+        "color": metric.get("color", "#75857b"),
+    }
+    return {**item, "metric": upgraded_metric}

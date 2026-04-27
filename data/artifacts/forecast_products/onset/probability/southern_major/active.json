@@ -1,0 +1,18 @@
+{
+  "product_id": "onset_probability_2025_20260427T064141Z",
+  "theme": "onset",
+  "view_mode": "probability",
+  "title": "Onset Date",
+  "forecast_year": 2025,
+  "generated_at": "2026-04-27T06:41:41.494468+00:00",
+  "source_label": "Cumulus Bridge Product",
+  "source_run_id": "onset_probability_2025_20260427T064141Z",
+  "generation_backend": "bridge_generated",
+  "refresh_interval_seconds": 1800,
+  "freshness_threshold_hours": 18,
+  "data_path": "C:\\Users\\CRAFT\\Desktop\\future MEST projects\\Backend\\cumulus\\backend\\data\\artifacts\\forecast_products\\onset\\probability\\Forecast_Prob_PRCPOnset_2025.nc",
+  "preview_path": "C:\\Users\\CRAFT\\Desktop\\future MEST projects\\Backend\\cumulus\\backend\\data\\artifacts\\forecast_products\\onset\\probability\\preview.png",
+  "manifest_path": "C:\\Users\\CRAFT\\Desktop\\future MEST projects\\Backend\\cumulus\\backend\\data\\artifacts\\forecast_products\\onset\\probability\\southern_major\\active.json",
+  "season_profile": "southern_major",
+  "subseason": null
+}

@@ -1,0 +1,787 @@
+{
+  "ecdf": [
+    {
+      "mean_bias": 0.0,
+      "observed": 0.0,
+      "quantile_mapping": 0.0,
+      "rainfall_mm": 0.0,
+      "raw": 0.0
+    },
+    {
+      "mean_bias": 0.0,
+      "observed": 0.0,
+      "quantile_mapping": 0.0,
+      "rainfall_mm": 0.0837746399564023,
+      "raw": 0.0
+    },
+    {
+      "mean_bias": 0.0,
+      "observed": 0.0,
+      "quantile_mapping": 0.0,
+      "rainfall_mm": 0.1675492799128046,
+      "raw": 0.0
+    },
+    {
+      "mean_bias": 0.0,
+      "observed": 0.0,
+      "quantile_mapping": 0.0,
+      "rainfall_mm": 0.2513239198692069,
+      "raw": 0.0
+    },
+    {
+      "mean_bias": 0.0,
+      "observed": 0.0,
+      "quantile_mapping": 0.0,
+      "rainfall_mm": 0.3350985598256092,
+      "raw": 0.0
+    },
+    {
+      "mean_bias": 0.0,
+      "observed": 0.0,
+      "quantile_mapping": 0.0,
+      "rainfall_mm": 0.41887319978201154,
+      "raw": 0.0
+    },
+    {
+      "mean_bias": 0.0,
+      "observed": 0.0,
+      "quantile_mapping": 0.0,
+      "rainfall_mm": 0.5026478397384138,
+      "raw": 0.0
+    },
+    {
+      "mean_bias": 0.0,
+      "observed": 0.0,
+      "quantile_mapping": 0.0,
+      "rainfall_mm": 0.5864224796948161,
+      "raw": 0.0
+    },
+    {
+      "mean_bias": 0.0,
+      "observed": 0.0,
+      "quantile_mapping": 0.42857142857142855,
+      "rainfall_mm": 0.6701971196512184,
+      "raw": 0.0
+    },
+    {
+      "mean_bias": 0.0,
+      "observed": 0.0,
+      "quantile_mapping": 0.42857142857142855,
+      "rainfall_mm": 0.7539717596076208,
+      "raw": 0.0
+    },
+    {
+      "mean_bias": 0.0,
+      "observed": 0.0,
+      "quantile_mapping": 0.42857142857142855,
+      "rainfall_mm": 0.8377463995640231,
+      "raw": 0.0
+    },
+    {
+      "mean_bias": 0.0,
+      "observed": 0.0,
+      "quantile_mapping": 0.42857142857142855,
+      "rainfall_mm": 0.9215210395204253,
+      "raw": 0.0
+    },
+    {
+      "mean_bias": 0.0,
+      "observed": 0.14285714285714285,
+      "quantile_mapping": 0.42857142857142855,
+      "rainfall_mm": 1.0052956794768275,
+      "raw": 0.0
+    },
+    {
+      "mean_bias": 0.0,
+      "observed": 0.14285714285714285,
+      "quantile_mapping": 0.42857142857142855,
+      "rainfall_mm": 1.0890703194332298,
+      "raw": 0.0
+    },
+    {
+      "mean_bias": 0.0,
+      "observed": 0.14285714285714285,
+      "quantile_mapping": 0.42857142857142855,
+      "rainfall_mm": 1.1728449593896322,
+      "raw": 0.0
+    },
+    {
+      "mean_bias": 0.0,
+      "observed": 0.14285714285714285,
+      "quantile_mapping": 0.42857142857142855,
+      "rainfall_mm": 1.2566195993460345,
+      "raw": 0.0
+    },
+    {
+      "mean_bias": 0.0,
+      "observed": 0.14285714285714285,
+      "quantile_mapping": 0.42857142857142855,
+      "rainfall_mm": 1.3403942393024368,
+      "raw": 0.0
+    },
+    {
+      "mean_bias": 0.0,
+      "observed": 0.14285714285714285,
+      "quantile_mapping": 0.42857142857142855,
+      "rainfall_mm": 1.4241688792588392,
+      "raw": 0.0
+    },
+    {
+      "mean_bias": 0.0,
+      "observed": 0.14285714285714285,
+      "quantile_mapping": 0.42857142857142855,
+      "rainfall_mm": 1.5079435192152415,
+      "raw": 0.0
+    },
+    {
+      "mean_bias": 0.0,
+      "observed": 0.14285714285714285,
+      "quantile_mapping": 0.42857142857142855,
+      "rainfall_mm": 1.5917181591716438,
+      "raw": 0.0
+    },
+    {
+      "mean_bias": 0.0,
+      "observed": 0.14285714285714285,
+      "quantile_mapping": 0.42857142857142855,
+      "rainfall_mm": 1.6754927991280462,
+      "raw": 0.0
+    },
+    {
+      "mean_bias": 0.0,
+      "observed": 0.14285714285714285,
+      "quantile_mapping": 0.42857142857142855,
+      "rainfall_mm": 1.7592674390844483,
+      "raw": 0.0
+    },
+    {
+      "mean_bias": 0.0,
+      "observed": 0.14285714285714285,
+      "quantile_mapping": 0.42857142857142855,
+      "rainfall_mm": 1.8430420790408506,
+      "raw": 0.0
+    },
+    {
+      "mean_bias": 0.0,
+      "observed": 0.14285714285714285,
+      "quantile_mapping": 0.42857142857142855,
+      "rainfall_mm": 1.926816718997253,
+      "raw": 0.0
+    },
+    {
+      "mean_bias": 0.0,
+      "observed": 0.2857142857142857,
+      "quantile_mapping": 0.42857142857142855,
+      "rainfall_mm": 2.010591358953655,
+      "raw": 0.0
+    },
+    {
+      "mean_bias": 0.0,
+      "observed": 0.2857142857142857,
+      "quantile_mapping": 0.42857142857142855,
+      "rainfall_mm": 2.0943659989100576,
+      "raw": 0.0
+    },
+    {
+      "mean_bias": 0.0,
+      "observed": 0.2857142857142857,
+      "quantile_mapping": 0.42857142857142855,
+      "rainfall_mm": 2.1781406388664597,
+      "raw": 0.0
+    },
+    {
+      "mean_bias": 0.0,
+      "observed": 0.2857142857142857,
+      "quantile_mapping": 0.42857142857142855,
+      "rainfall_mm": 2.2619152788228623,
+      "raw": 0.0
+    },
+    {
+      "mean_bias": 0.0,
+      "observed": 0.2857142857142857,
+      "quantile_mapping": 0.42857142857142855,
+      "rainfall_mm": 2.3456899187792644,
+      "raw": 0.0
+    },
+    {
+      "mean_bias": 0.0,
+      "observed": 0.2857142857142857,
+      "quantile_mapping": 0.42857142857142855,
+      "rainfall_mm": 2.429464558735667,
+      "raw": 0.0
+    },
+    {
+      "mean_bias": 0.0,
+      "observed": 0.2857142857142857,
+      "quantile_mapping": 0.42857142857142855,
+      "rainfall_mm": 2.513239198692069,
+      "raw": 0.0
+    },
+    {
+      "mean_bias": 0.0,
+      "observed": 0.2857142857142857,
+      "quantile_mapping": 0.42857142857142855,
+      "rainfall_mm": 2.5970138386484716,
+      "raw": 0.0
+    },
+    {
+      "mean_bias": 0.0,
+      "observed": 0.2857142857142857,
+      "quantile_mapping": 0.42857142857142855,
+      "rainfall_mm": 2.6807884786048737,
+      "raw": 0.14285714285714285
+    },
+    {
+      "mean_bias": 0.14285714285714285,
+      "observed": 0.2857142857142857,
+      "quantile_mapping": 0.42857142857142855,
+      "rainfall_mm": 2.764563118561276,
+      "raw": 0.2857142857142857
+    },
+    {
+      "mean_bias": 0.14285714285714285,
+      "observed": 0.2857142857142857,
+      "quantile_mapping": 0.42857142857142855,
+      "rainfall_mm": 2.8483377585176783,
+      "raw": 0.2857142857142857
+    },
+    {
+      "mean_bias": 0.2857142857142857,
+      "observed": 0.2857142857142857,
+      "quantile_mapping": 0.42857142857142855,
+      "rainfall_mm": 2.9321123984740805,
+      "raw": 0.2857142857142857
+    },
+    {
+      "mean_bias": 0.2857142857142857,
+      "observed": 0.2857142857142857,
+      "quantile_mapping": 0.42857142857142855,
+      "rainfall_mm": 3.015887038430483,
+      "raw": 0.2857142857142857
+    },
+    {
+      "mean_bias": 0.2857142857142857,
+      "observed": 0.2857142857142857,
+      "quantile_mapping": 0.42857142857142855,
+      "rainfall_mm": 3.099661678386885,
+      "raw": 0.2857142857142857
+    },
+    {
+      "mean_bias": 0.2857142857142857,
+      "observed": 0.2857142857142857,
+      "quantile_mapping": 0.42857142857142855,
+      "rainfall_mm": 3.1834363183432877,
+      "raw": 0.2857142857142857
+    },
+    {
+      "mean_bias": 0.2857142857142857,
+      "observed": 0.2857142857142857,
+      "quantile_mapping": 0.42857142857142855,
+      "rainfall_mm": 3.2672109582996898,
+      "raw": 0.2857142857142857
+    },
+    {
+      "mean_bias": 0.2857142857142857,
+      "observed": 0.2857142857142857,
+      "quantile_mapping": 0.5714285714285714,
+      "rainfall_mm": 3.3509855982560923,
+      "raw": 0.2857142857142857
+    },
+    {
+      "mean_bias": 0.2857142857142857,
+      "observed": 0.2857142857142857,
+      "quantile_mapping": 0.5714285714285714,
+      "rainfall_mm": 3.4347602382124944,
+      "raw": 0.2857142857142857
+    },
+    {
+      "mean_bias": 0.2857142857142857,
+      "observed": 0.42857142857142855,
+      "quantile_mapping": 0.5714285714285714,
+      "rainfall_mm": 3.5185348781688965,
+      "raw": 0.2857142857142857
+    },
+    {
+      "mean_bias": 0.2857142857142857,
+      "observed": 0.42857142857142855,
+      "quantile_mapping": 0.5714285714285714,
+      "rainfall_mm": 3.602309518125299,
+      "raw": 0.42857142857142855
+    },
+    {
+      "mean_bias": 0.42857142857142855,
+      "observed": 0.42857142857142855,
+      "quantile_mapping": 0.5714285714285714,
+      "rainfall_mm": 3.686084158081701,
+      "raw": 0.42857142857142855
+    },
+    {
+      "mean_bias": 0.42857142857142855,
+      "observed": 0.42857142857142855,
+      "quantile_mapping": 0.5714285714285714,
+      "rainfall_mm": 3.7698587980381038,
+      "raw": 0.42857142857142855
+    },
+    {
+      "mean_bias": 0.42857142857142855,
+      "observed": 0.42857142857142855,
+      "quantile_mapping": 0.5714285714285714,
+      "rainfall_mm": 3.853633437994506,
+      "raw": 0.42857142857142855
+    },
+    {
+      "mean_bias": 0.42857142857142855,
+      "observed": 0.42857142857142855,
+      "quantile_mapping": 0.5714285714285714,
+      "rainfall_mm": 3.9374080779509084,
+      "raw": 0.5714285714285714
+    },
+    {
+      "mean_bias": 0.42857142857142855,
+      "observed": 0.42857142857142855,
+      "quantile_mapping": 0.5714285714285714,
+      "rainfall_mm": 4.02118271790731,
+      "raw": 0.5714285714285714
+    },
+    {
+      "mean_bias": 0.5714285714285714,
+      "observed": 0.42857142857142855,
+      "quantile_mapping": 0.5714285714285714,
+      "rainfall_mm": 4.104957357863713,
+      "raw": 0.5714285714285714
+    },
+    {
+      "mean_bias": 0.5714285714285714,
+      "observed": 0.42857142857142855,
+      "quantile_mapping": 0.5714285714285714,
+      "rainfall_mm": 4.188731997820115,
+      "raw": 0.5714285714285714
+    },
+    {
+      "mean_bias": 0.5714285714285714,
+      "observed": 0.42857142857142855,
+      "quantile_mapping": 0.5714285714285714,
+      "rainfall_mm": 4.272506637776518,
+      "raw": 0.5714285714285714
+    },
+    {
+      "mean_bias": 0.5714285714285714,
+      "observed": 0.42857142857142855,
+      "quantile_mapping": 0.5714285714285714,
+      "rainfall_mm": 4.356281277732919,
+      "raw": 0.5714285714285714
+    },
+    {
+      "mean_bias": 0.5714285714285714,
+      "observed": 0.42857142857142855,
+      "quantile_mapping": 0.5714285714285714,
+      "rainfall_mm": 4.440055917689322,
+      "raw": 0.5714285714285714
+    },
+    {
+      "mean_bias": 0.5714285714285714,
+      "observed": 0.5714285714285714,
+      "quantile_mapping": 0.5714285714285714,
+      "rainfall_mm": 4.5238305576457245,
+      "raw": 0.5714285714285714
+    },
+    {
+      "mean_bias": 0.5714285714285714,
+      "observed": 0.5714285714285714,
+      "quantile_mapping": 0.5714285714285714,
+      "rainfall_mm": 4.607605197602127,
+      "raw": 0.5714285714285714
+    },
+    {
+      "mean_bias": 0.5714285714285714,
+      "observed": 0.5714285714285714,
+      "quantile_mapping": 0.5714285714285714,
+      "rainfall_mm": 4.691379837558529,
+      "raw": 0.5714285714285714
+    },
+    {
+      "mean_bias": 0.5714285714285714,
+      "observed": 0.5714285714285714,
+      "quantile_mapping": 0.5714285714285714,
+      "rainfall_mm": 4.775154477514931,
+      "raw": 0.5714285714285714
+    },
+    {
+      "mean_bias": 0.5714285714285714,
+      "observed": 0.5714285714285714,
+      "quantile_mapping": 0.5714285714285714,
+      "rainfall_mm": 4.858929117471334,
+      "raw": 0.5714285714285714
+    },
+    {
+      "mean_bias": 0.5714285714285714,
+      "observed": 0.5714285714285714,
+      "quantile_mapping": 0.5714285714285714,
+      "rainfall_mm": 4.9427037574277355,
+      "raw": 0.7142857142857143
+    },
+    {
+      "mean_bias": 0.5714285714285714,
+      "observed": 0.5714285714285714,
+      "quantile_mapping": 0.5714285714285714,
+      "rainfall_mm": 5.026478397384138,
+      "raw": 0.7142857142857143
+    },
+    {
+      "mean_bias": 0.7142857142857143,
+      "observed": 0.5714285714285714,
+      "quantile_mapping": 0.5714285714285714,
+      "rainfall_mm": 5.110253037340541,
+      "raw": 0.7142857142857143
+    },
+    {
+      "mean_bias": 0.7142857142857143,
+      "observed": 0.5714285714285714,
+      "quantile_mapping": 0.5714285714285714,
+      "rainfall_mm": 5.194027677296943,
+      "raw": 0.7142857142857143
+    },
+    {
+      "mean_bias": 0.7142857142857143,
+      "observed": 0.5714285714285714,
+      "quantile_mapping": 0.5714285714285714,
+      "rainfall_mm": 5.277802317253345,
+      "raw": 0.7142857142857143
+    },
+    {
+      "mean_bias": 0.7142857142857143,
+      "observed": 0.5714285714285714,
+      "quantile_mapping": 0.5714285714285714,
+      "rainfall_mm": 5.361576957209747,
+      "raw": 0.7142857142857143
+    },
+    {
+      "mean_bias": 0.7142857142857143,
+      "observed": 0.5714285714285714,
+      "quantile_mapping": 0.5714285714285714,
+      "rainfall_mm": 5.44535159716615,
+      "raw": 0.7142857142857143
+    },
+    {
+      "mean_bias": 0.7142857142857143,
+      "observed": 0.5714285714285714,
+      "quantile_mapping": 0.5714285714285714,
+      "rainfall_mm": 5.529126237122552,
+      "raw": 0.7142857142857143
+    },
+    {
+      "mean_bias": 0.7142857142857143,
+      "observed": 0.5714285714285714,
+      "quantile_mapping": 0.5714285714285714,
+      "rainfall_mm": 5.612900877078954,
+      "raw": 0.7142857142857143
+    },
+    {
+      "mean_bias": 0.7142857142857143,
+      "observed": 0.5714285714285714,
+      "quantile_mapping": 0.5714285714285714,
+      "rainfall_mm": 5.696675517035357,
+      "raw": 0.7142857142857143
+    },
+    {
+      "mean_bias": 0.7142857142857143,
+      "observed": 0.5714285714285714,
+      "quantile_mapping": 0.5714285714285714,
+      "rainfall_mm": 5.780450156991759,
+      "raw": 0.7142857142857143
+    },
+    {
+      "mean_bias": 0.7142857142857143,
+      "observed": 0.5714285714285714,
+      "quantile_mapping": 0.5714285714285714,
+      "rainfall_mm": 5.864224796948161,
+      "raw": 0.7142857142857143
+    },
+    {
+      "mean_bias": 0.7142857142857143,
+      "observed": 0.5714285714285714,
+      "quantile_mapping": 0.5714285714285714,
+      "rainfall_mm": 5.9479994369045635,
+      "raw": 0.7142857142857143
+    },
+    {
+      "mean_bias": 0.7142857142857143,
+      "observed": 0.7142857142857143,
+      "quantile_mapping": 0.5714285714285714,
+      "rainfall_mm": 6.031774076860966,
+      "raw": 0.7142857142857143
+    },
+    {
+      "mean_bias": 0.7142857142857143,
+      "observed": 0.7142857142857143,
+      "quantile_mapping": 0.7142857142857143,
+      "rainfall_mm": 6.115548716817368,
+      "raw": 0.7142857142857143
+    },
+    {
+      "mean_bias": 0.7142857142857143,
+      "observed": 0.7142857142857143,
+      "quantile_mapping": 0.7142857142857143,
+      "rainfall_mm": 6.19932335677377,
+      "raw": 0.7142857142857143
+    },
+    {
+      "mean_bias": 0.7142857142857143,
+      "observed": 0.7142857142857143,
+      "quantile_mapping": 0.7142857142857143,
+      "rainfall_mm": 6.283097996730173,
+      "raw": 0.7142857142857143
+    },
+    {
+      "mean_bias": 0.7142857142857143,
+      "observed": 0.7142857142857143,
+      "quantile_mapping": 0.7142857142857143,
+      "rainfall_mm": 6.366872636686575,
+      "raw": 0.7142857142857143
+    },
+    {
+      "mean_bias": 0.7142857142857143,
+      "observed": 0.7142857142857143,
+      "quantile_mapping": 0.7142857142857143,
+      "rainfall_mm": 6.450647276642977,
+      "raw": 0.8571428571428571
+    },
+    {
+      "mean_bias": 0.7142857142857143,
+      "observed": 0.7142857142857143,
+      "quantile_mapping": 0.7142857142857143,
+      "rainfall_mm": 6.5344219165993795,
+      "raw": 0.8571428571428571
+    },
+    {
+      "mean_bias": 0.7142857142857143,
+      "observed": 0.7142857142857143,
+      "quantile_mapping": 0.7142857142857143,
+      "rainfall_mm": 6.618196556555782,
+      "raw": 0.8571428571428571
+    },
+    {
+      "mean_bias": 0.8571428571428571,
+      "observed": 0.7142857142857143,
+      "quantile_mapping": 0.7142857142857143,
+      "rainfall_mm": 6.701971196512185,
+      "raw": 0.8571428571428571
+    },
+    {
+      "mean_bias": 0.8571428571428571,
+      "observed": 0.7142857142857143,
+      "quantile_mapping": 0.7142857142857143,
+      "rainfall_mm": 6.785745836468586,
+      "raw": 0.8571428571428571
+    },
+    {
+      "mean_bias": 0.8571428571428571,
+      "observed": 0.7142857142857143,
+      "quantile_mapping": 0.7142857142857143,
+      "rainfall_mm": 6.869520476424989,
+      "raw": 0.8571428571428571
+    },
+    {
+      "mean_bias": 0.8571428571428571,
+      "observed": 0.7142857142857143,
+      "quantile_mapping": 0.7142857142857143,
+      "rainfall_mm": 6.953295116381391,
+      "raw": 0.8571428571428571
+    },
+    {
+      "mean_bias": 0.8571428571428571,
+      "observed": 0.8571428571428571,
+      "quantile_mapping": 0.7142857142857143,
+      "rainfall_mm": 7.037069756337793,
+      "raw": 0.8571428571428571
+    },
+    {
+      "mean_bias": 0.8571428571428571,
+      "observed": 0.8571428571428571,
+      "quantile_mapping": 0.7142857142857143,
+      "rainfall_mm": 7.120844396294196,
+      "raw": 0.8571428571428571
+    },
+    {
+      "mean_bias": 0.8571428571428571,
+      "observed": 0.8571428571428571,
+      "quantile_mapping": 0.7142857142857143,
+      "rainfall_mm": 7.204619036250598,
+      "raw": 0.8571428571428571
+    },
+    {
+      "mean_bias": 0.8571428571428571,
+      "observed": 0.8571428571428571,
+      "quantile_mapping": 0.7142857142857143,
+      "rainfall_mm": 7.288393676207001,
+      "raw": 0.8571428571428571
+    },
+    {
+      "mean_bias": 0.8571428571428571,
+      "observed": 0.8571428571428571,
+      "quantile_mapping": 0.7142857142857143,
+      "rainfall_mm": 7.372168316163402,
+      "raw": 0.8571428571428571
+    },
+    {
+      "mean_bias": 0.8571428571428571,
+      "observed": 0.8571428571428571,
+      "quantile_mapping": 0.7142857142857143,
+      "rainfall_mm": 7.455942956119805,
+      "raw": 1.0
+    },
+    {
+      "mean_bias": 0.8571428571428571,
+      "observed": 1.0,
+      "quantile_mapping": 0.7142857142857143,
+      "rainfall_mm": 7.5397175960762075,
+      "raw": 1.0
+    },
+    {
+      "mean_bias": 0.8571428571428571,
+      "observed": 1.0,
+      "quantile_mapping": 0.8571428571428571,
+      "rainfall_mm": 7.623492236032609,
+      "raw": 1.0
+    },
+    {
+      "mean_bias": 0.8571428571428571,
+      "observed": 1.0,
+      "quantile_mapping": 0.8571428571428571,
+      "rainfall_mm": 7.707266875989012,
+      "raw": 1.0
+    },
+    {
+      "mean_bias": 1.0,
+      "observed": 1.0,
+      "quantile_mapping": 0.8571428571428571,
+      "rainfall_mm": 7.791041515945414,
+      "raw": 1.0
+    },
+    {
+      "mean_bias": 1.0,
+      "observed": 1.0,
+      "quantile_mapping": 0.8571428571428571,
+      "rainfall_mm": 7.874816155901817,
+      "raw": 1.0
+    },
+    {
+      "mean_bias": 1.0,
+      "observed": 1.0,
+      "quantile_mapping": 0.8571428571428571,
+      "rainfall_mm": 7.9585907958582185,
+      "raw": 1.0
+    },
+    {
+      "mean_bias": 1.0,
+      "observed": 1.0,
+      "quantile_mapping": 0.8571428571428571,
+      "rainfall_mm": 8.04236543581462,
+      "raw": 1.0
+    },
+    {
+      "mean_bias": 1.0,
+      "observed": 1.0,
+      "quantile_mapping": 0.8571428571428571,
+      "rainfall_mm": 8.126140075771023,
+      "raw": 1.0
+    },
+    {
+      "mean_bias": 1.0,
+      "observed": 1.0,
+      "quantile_mapping": 0.8571428571428571,
+      "rainfall_mm": 8.209914715727425,
+      "raw": 1.0
+    },
+    {
+      "mean_bias": 1.0,
+      "observed": 1.0,
+      "quantile_mapping": 0.8571428571428571,
+      "rainfall_mm": 8.293689355683828,
+      "raw": 1.0
+    },
+    {
+      "mean_bias": 1.0,
+      "observed": 1.0,
+      "quantile_mapping": 1.0,
+      "rainfall_mm": 8.37746399564023,
+      "raw": 1.0
+    }
+  ],
+  "model_version": "rf_rainfall_20260423T105140Z",
+  "quantiles": [
+    {
+      "mean_bias": 2.734015823355606,
+      "observed": 1.06,
+      "percentile": "p01",
+      "probability": 0.01,
+      "quantile_mapping": 0.65,
+      "raw": 2.6321513765162123
+    },
+    {
+      "mean_bias": 2.7688071497032554,
+      "observed": 1.3,
+      "percentile": "p05",
+      "probability": 0.05,
+      "quantile_mapping": 0.65,
+      "raw": 2.665646441451277
+    },
+    {
+      "mean_bias": 2.8122963076378173,
+      "observed": 1.6,
+      "percentile": "p10",
+      "probability": 0.1,
+      "quantile_mapping": 0.65,
+      "raw": 2.707515272620108
+    },
+    {
+      "mean_bias": 3.2765514663501882,
+      "observed": 2.75,
+      "percentile": "p25",
+      "probability": 0.25,
+      "quantile_mapping": 0.65,
+      "raw": 3.1544731302230336
+    },
+    {
+      "mean_bias": 4.070145708031907,
+      "observed": 4.5,
+      "percentile": "p50",
+      "probability": 0.5,
+      "quantile_mapping": 3.2926781896374253,
+      "raw": 3.9184994967837445
+    },
+    {
+      "mean_bias": 5.858865180367564,
+      "observed": 6.5,
+      "percentile": "p75",
+      "probability": 0.75,
+      "quantile_mapping": 6.851248079419507,
+      "raw": 5.640574541518141
+    },
+    {
+      "mean_bias": 7.089822286154952,
+      "observed": 7.2,
+      "percentile": "p90",
+      "probability": 0.9,
+      "quantile_mapping": 7.916712450731954,
+      "raw": 6.825668428960965
+    },
+    {
+      "mean_bias": 7.409355917962862,
+      "observed": 7.35,
+      "percentile": "p95",
+      "probability": 0.95,
+      "quantile_mapping": 8.147088223186092,
+      "raw": 7.133296819997171
+    },
+    {
+      "mean_bias": 7.664982823409191,
+      "observed": 7.47,
+      "percentile": "p99",
+      "probability": 0.99,
+      "quantile_mapping": 8.331388841149403,
+      "raw": 7.379399532826137
+    }
+  ],
+  "selected_bias_method": "mean_bias"
+}

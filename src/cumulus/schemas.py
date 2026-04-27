@@ -263,29 +263,65 @@ class SeasonalLegendItemResponse(SchemaModel):
     label: str
     hint: str
     color: str
+    family_label: str
+    display_order: int
+    reverse_probability_scale: bool
 
 
-class SeasonalThemeMetricResponse(SchemaModel):
+class SeasonalProbabilityCategoryResponse(SchemaModel):
+    category_code: str
+    label: str
+    hint: str
+    color: str
+    percentage: float
+
+
+class SeasonalProbabilityMetricResponse(SchemaModel):
     theme: str
     theme_label: str
     category_code: str
     category_label: str
-    numeric_value: float | None = None
+    dominant_category_code: str
+    dominant_category_label: str
+    dominant_percentage: float
     display_value: str
     unit: str | None = None
     criteria_note: str
     interpretation: str
     color: str
+    category_probabilities: list[SeasonalProbabilityCategoryResponse]
 
 
-class SeasonalMapAreaResponse(SchemaModel):
+class SeasonalDeterministicMetricResponse(SchemaModel):
+    theme: str
+    theme_label: str
+    value: float | None = None
+    display_value: str
+    unit: str | None = None
+    criteria_note: str
+    interpretation: str
+    legend_label: str
+    color: str
+
+
+class SeasonalProbabilityMapAreaResponse(SchemaModel):
     location_id: str
     geography_type: str
     geography_name: str
     region_name: str
     coverage_count: int = 1
     coverage_note: str
-    metric: SeasonalThemeMetricResponse
+    metric: SeasonalProbabilityMetricResponse
+
+
+class SeasonalDeterministicMapAreaResponse(SchemaModel):
+    location_id: str
+    geography_type: str
+    geography_name: str
+    region_name: str
+    coverage_count: int = 1
+    coverage_note: str
+    metric: SeasonalDeterministicMetricResponse
 
 
 class SeasonalMapRunResponse(SchemaModel):
@@ -307,12 +343,20 @@ class SeasonalMapRunResponse(SchemaModel):
     region_count: int
 
 
-class SeasonalMapProductResponse(SeasonalMapRunResponse):
+class SeasonalProbabilityMapProductResponse(SeasonalMapRunResponse):
     refresh_status: str
     is_stale: bool
     legend: list[SeasonalLegendItemResponse]
-    district_items: list[SeasonalMapAreaResponse]
-    region_items: list[SeasonalMapAreaResponse]
+    district_items: list[SeasonalProbabilityMapAreaResponse]
+    region_items: list[SeasonalProbabilityMapAreaResponse]
+
+
+class SeasonalDeterministicMapProductResponse(SeasonalMapRunResponse):
+    refresh_status: str
+    is_stale: bool
+    legend: list[SeasonalLegendItemResponse]
+    district_items: list[SeasonalDeterministicMapAreaResponse]
+    region_items: list[SeasonalDeterministicMapAreaResponse]
 
 
 class SeasonalMapRefreshCombinationResponse(SchemaModel):
@@ -361,6 +405,227 @@ class SeasonalProfileOptionsResponse(SchemaModel):
 class SeasonalMapOptionsResponse(SchemaModel):
     themes: dict[str, SeasonalThemeOptionsResponse]
     profiles: dict[str, SeasonalProfileOptionsResponse]
+
+
+class ForecastRasterLegendStopResponse(SchemaModel):
+    offset: float
+    color: str
+
+
+class ForecastRasterBoundsResponse(SchemaModel):
+    latitude_min: float
+    latitude_max: float
+    longitude_min: float
+    longitude_max: float
+
+
+class ForecastRasterGridResponse(SchemaModel):
+    latitudes: list[float]
+    longitudes: list[float]
+    values: list[list[float | None]]
+
+
+class ForecastRasterMetadataResponse(SchemaModel):
+    layer_id: str
+    tile_url: str
+    variable: str
+    variable_label: str
+    unit: str
+    horizon_day: int
+    valid_time: datetime
+    generated_at: datetime
+    forecast_source: str
+    forecast_source_label: str
+    source_run_id: str
+    data_origin: str | None = None
+    lower_bound: float
+    upper_bound: float
+    available_horizon_days: list[int]
+    legend_ticks: list[float]
+    color_ramp: list[ForecastRasterLegendStopResponse]
+    bounds: ForecastRasterBoundsResponse
+    grid: ForecastRasterGridResponse
+
+
+class ForecastRasterSampleResponse(SchemaModel):
+    latitude: float
+    longitude: float
+    nearest_latitude: float | None = None
+    nearest_longitude: float | None = None
+    value: float | None = None
+    variable: str
+    variable_label: str
+    unit: str
+    horizon_day: int
+    valid_time: datetime
+    forecast_source: str
+    forecast_source_label: str
+    source_run_id: str
+    data_origin: str | None = None
+
+
+class ForecastProductBoundsResponse(SchemaModel):
+    latitude_min: float
+    latitude_max: float
+    longitude_min: float
+    longitude_max: float
+
+
+class ForecastProductLegendItemResponse(SchemaModel):
+    category_code: str
+    label: str
+    hint: str
+    color: str
+    display_order: int
+
+
+class ForecastProductColorRampStopResponse(SchemaModel):
+    offset: float
+    color: str
+
+
+class ForecastProbabilityProductResponse(SchemaModel):
+    product_id: str
+    theme: str
+    theme_label: str
+    season_profile: str | None = None
+    season_label: str | None = None
+    subseason: str | None = None
+    subseason_label: str | None = None
+    forecast_year: int
+    valid_time: datetime
+    generated_at: datetime
+    forecast_source: str
+    forecast_source_label: str
+    source_run_id: str
+    generation_backend: str
+    refresh_interval_seconds: int
+    freshness_threshold_hours: int
+    tile_url: str
+    preview_url: str | None = None
+    bounds: ForecastProductBoundsResponse
+    legend: list[ForecastProductLegendItemResponse]
+
+
+class ForecastDeterministicProductResponse(SchemaModel):
+    product_id: str
+    theme: str
+    theme_label: str
+    season_profile: str | None = None
+    season_label: str | None = None
+    subseason: str | None = None
+    subseason_label: str | None = None
+    forecast_year: int
+    valid_time: datetime
+    generated_at: datetime
+    forecast_source: str
+    forecast_source_label: str
+    source_run_id: str
+    generation_backend: str
+    refresh_interval_seconds: int
+    freshness_threshold_hours: int
+    tile_url: str
+    preview_url: str | None = None
+    bounds: ForecastProductBoundsResponse
+    unit: str
+    lower_bound: float
+    upper_bound: float
+    legend_ticks: list[float]
+    color_ramp: list[ForecastProductColorRampStopResponse]
+
+
+class ForecastProbabilitySampleCategoryResponse(SchemaModel):
+    category_code: str
+    label: str
+    hint: str
+    color: str
+    percentage: float
+
+
+class ForecastProbabilitySampleResponse(SchemaModel):
+    theme: str
+    theme_label: str
+    season_profile: str | None = None
+    season_label: str | None = None
+    subseason: str | None = None
+    subseason_label: str | None = None
+    latitude: float
+    longitude: float
+    nearest_latitude: float
+    nearest_longitude: float
+    dominant_category_code: str
+    dominant_category_label: str
+    dominant_percentage: float
+    display_value: str
+    interpretation: str
+    criteria_note: str
+    category_probabilities: list[ForecastProbabilitySampleCategoryResponse]
+    valid_time: datetime
+    forecast_year: int
+    forecast_source: str
+    forecast_source_label: str
+    source_run_id: str
+    generation_backend: str
+
+
+class ForecastDeterministicSampleResponse(SchemaModel):
+    theme: str
+    theme_label: str
+    season_profile: str | None = None
+    season_label: str | None = None
+    subseason: str | None = None
+    subseason_label: str | None = None
+    latitude: float
+    longitude: float
+    nearest_latitude: float
+    nearest_longitude: float
+    value: float
+    display_value: str
+    unit: str
+    interpretation: str
+    criteria_note: str
+    valid_time: datetime
+    forecast_year: int
+    forecast_source: str
+    forecast_source_label: str
+    source_run_id: str
+    generation_backend: str
+
+
+class ForecastProductRefreshAttemptResponse(SchemaModel):
+    theme: str
+    view_mode: str
+
+
+class ForecastProductRefreshSuccessResponse(ForecastProductRefreshAttemptResponse):
+    product_id: str
+    generated_at: datetime
+    manifest_path: str
+
+
+class ForecastProductRefreshFailureResponse(ForecastProductRefreshAttemptResponse):
+    error: str
+
+
+class ForecastProductRefreshResponse(SchemaModel):
+    attempted_count: int
+    succeeded_count: int
+    failed_count: int
+    attempted: list[ForecastProductRefreshAttemptResponse]
+    succeeded: list[ForecastProductRefreshSuccessResponse]
+    failed: list[ForecastProductRefreshFailureResponse]
+
+
+class ForecastThemeOptionResponse(SchemaModel):
+    theme: str
+    label: str
+    title: str
+    requires_season: bool
+    requires_subseason: bool
+    enabled: bool
+    reason: str | None = None
+    seasons: list[str] = Field(default_factory=list)
+    subseasons: list[str] = Field(default_factory=list)
 
 
 class TrainResponse(SchemaModel):

@@ -61,7 +61,7 @@ def _open_dataset_cached(
         open_kwargs["chunks"] = chunks
     if engine is not None:
         ds = xr.open_dataset(dataset_path, engine=engine, **open_kwargs)
-    elif suffix in {".grib", ".grb", ".grb2"}:
+    elif suffix in {".grib", ".grib2", ".grb", ".grb2"}:
         ds = xr.open_dataset(dataset_path, engine="cfgrib", **open_kwargs)
     else:
         ds = xr.open_dataset(dataset_path, **open_kwargs)
@@ -109,6 +109,8 @@ def _convert_precip_to_mm(data_array: xr.DataArray) -> xr.DataArray:
     values = data_array
     if units in {"m", "meter", "meters"}:
         values = values * 1000.0
+        values.attrs["units"] = "mm"
+    elif units in {"kg m**-2", "kg m-2", "kg/m^2", "kg/m2"}:
         values.attrs["units"] = "mm"
     return values
 

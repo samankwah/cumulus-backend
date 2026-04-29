@@ -471,6 +471,16 @@ class ForecastProductBoundsResponse(SchemaModel):
     longitude_max: float
 
 
+class ForecastProductGridShapeResponse(SchemaModel):
+    y: int
+    x: int
+
+
+class ForecastProductGridResolutionResponse(SchemaModel):
+    latitude: float | None = None
+    longitude: float | None = None
+
+
 class ForecastProductLegendItemResponse(SchemaModel):
     category_code: str
     label: str
@@ -499,6 +509,10 @@ class ForecastProbabilityProductResponse(SchemaModel):
     forecast_source_label: str
     source_run_id: str
     generation_backend: str
+    source_artifact_type: str
+    grid_shape: ForecastProductGridShapeResponse
+    grid_resolution_degrees: ForecastProductGridResolutionResponse
+    is_low_resolution_fallback: bool
     refresh_interval_seconds: int
     freshness_threshold_hours: int
     tile_url: str
@@ -522,6 +536,10 @@ class ForecastDeterministicProductResponse(SchemaModel):
     forecast_source_label: str
     source_run_id: str
     generation_backend: str
+    source_artifact_type: str
+    grid_shape: ForecastProductGridShapeResponse
+    grid_resolution_degrees: ForecastProductGridResolutionResponse
+    is_low_resolution_fallback: bool
     refresh_interval_seconds: int
     freshness_threshold_hours: int
     tile_url: str

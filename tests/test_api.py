@@ -207,6 +207,7 @@ def test_predict_rejects_out_of_bounds_coordinates(monkeypatch, tmp_path):
 
 
 def test_predict_returns_operational_error_when_forecast_source_missing(monkeypatch, tmp_path):
+    monkeypatch.setenv("CUMULUS_DATA_DIR", str(tmp_path / "data"))
     monkeypatch.setenv("CUMULUS_MODEL_ARTIFACT_DIR", str(tmp_path / "models"))
     monkeypatch.setenv("CUMULUS_BIAS_ARTIFACT_DIR", str(tmp_path / "bias"))
     monkeypatch.setenv("CUMULUS_EVALUATION_DIR", str(tmp_path / "evaluation"))

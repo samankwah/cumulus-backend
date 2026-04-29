@@ -84,7 +84,7 @@ def infer_dataset_engine(path: str | Path | None) -> str | None:
     if path is None:
         return None
     suffix = Path(path).suffix.lower()
-    if suffix in {".grib", ".grb", ".grb2"}:
+    if suffix in {".grib", ".grib2", ".grb", ".grb2"}:
         return "cfgrib"
     if suffix in {".nc", ".nc4", ".cdf"}:
         return "scipy"

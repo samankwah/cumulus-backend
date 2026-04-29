@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from functools import lru_cache
+import os
 from pathlib import Path
 from typing import Any
 
@@ -27,7 +28,9 @@ DEFAULT_NATIONWIDE_ARTIFACT_DIR = BACKEND_ROOT / "data" / "artifacts" / "nationw
 DEFAULT_SEASONAL_MAP_ARTIFACT_DIR = BACKEND_ROOT / "data" / "artifacts" / "seasonal_map"
 DEFAULT_FORECAST_PRODUCT_ARTIFACT_DIR = BACKEND_ROOT / "data" / "artifacts" / "forecast_products"
 DEFAULT_DISTRICT_GEOJSON_PATH = WORKSPACE_ROOT / "frontend" / "public" / "data" / "ghana_district_polygons_simplified.geojson"
-DEFAULT_FORECAST_PRODUCT_SOURCE_DIR = Path.home() / "Desktop" / "MEST_projects" / "wass2s" / "Agro_PRESAGG_2026_ic_1" / "forecasts"
+DEFAULT_WASS2S_2026_ROOT = Path.home() / "Desktop" / "MEST_projects" / "wass2s" / "Agro_PRESAGG_2026_ic_1"
+DEFAULT_FORECAST_PRODUCT_SOURCE_DIR = DEFAULT_WASS2S_2026_ROOT / "forecasts"
+DEFAULT_FORECAST_PRODUCT_DAILY_CORRECTED_DIR = DEFAULT_WASS2S_2026_ROOT / "daily_model_data" / "corrected"
 
 
 class BiasCorrectionConfig(BaseModel):
@@ -160,12 +163,94 @@ class ForecastProductSourceConfig(BaseModel):
     title: str
 
 
+class ForecastProductPairSourceConfig(BaseModel):
+    deterministic_path: Path
+    probability_path: Path
+    forecast_year: int = 2026
+    title: str | None = None
+
+
 class ForecastProductConfig(BaseModel):
     artifact_dir: Path = DEFAULT_FORECAST_PRODUCT_ARTIFACT_DIR
     refresh_interval_seconds: int = 1800
     freshness_threshold_hours: int = 18
     source_label: str = "Cumulus Bridge Product"
     generation_backend: str = "bridge_generated"
+    daily_corrected_dir: Path = DEFAULT_FORECAST_PRODUCT_DAILY_CORRECTED_DIR
+    daily_forecast_glob: str = "forecast_*_PRCP_*Ic.nc"
+    derived_min_member_count: int = 2
+    derived_min_coverage_fraction: float = 0.85
+    final_product_dirs: list[Path] = Field(
+        default_factory=lambda: [
+            Path("E:/"),
+            Path("E:/obj_files"),
+            DEFAULT_FORECAST_PRODUCT_SOURCE_DIR,
+        ]
+    )
+    final_product_sources: dict[str, dict[str, ForecastProductPairSourceConfig]] = Field(
+        default_factory=lambda: {
+            "rainfall_amount": {
+                "MAM": ForecastProductPairSourceConfig(
+                    deterministic_path=Path("E:/Forecast_Det_PRCPMarAprMay_2026.nc"),
+                    probability_path=Path("E:/Forecast_Prob_PRCPMarAprMay_2026.nc"),
+                    forecast_year=2026,
+                    title="Seasonal Rainfall Total",
+                ),
+                "AMJ": ForecastProductPairSourceConfig(
+                    deterministic_path=Path("E:/obj_files/Forecast_Det_PRCPAprMayJun_2026.nc"),
+                    probability_path=Path("E:/obj_files/Forecast_Prob_PRCPAprMayJun_2026.nc"),
+                    forecast_year=2026,
+                    title="Seasonal Rainfall Total",
+                ),
+                "MJJ": ForecastProductPairSourceConfig(
+                    deterministic_path=Path("E:/obj_files/Forecast_Det_PRCPMayJunJul_2026.nc"),
+                    probability_path=Path("E:/obj_files/Forecast_Prob_PRCPMayJunJul_2026.nc"),
+                    forecast_year=2026,
+                    title="Seasonal Rainfall Total",
+                ),
+                "JJA": ForecastProductPairSourceConfig(
+                    deterministic_path=Path("E:/obj_files/Forecast_Det_PRCPJunJulAug_2026.nc"),
+                    probability_path=Path("E:/obj_files/Forecast_Prob_PRCPJunJulAug_2026.nc"),
+                    forecast_year=2026,
+                    title="Seasonal Rainfall Total",
+                ),
+                "JAS": ForecastProductPairSourceConfig(
+                    deterministic_path=Path("E:/obj_files/Forecast_Det_PRCPJulAugSep_2026.nc"),
+                    probability_path=Path("E:/obj_files/Forecast_Prob_PRCPJulAugSep_2026.nc"),
+                    forecast_year=2026,
+                    title="Seasonal Rainfall Total",
+                ),
+                "SON": ForecastProductPairSourceConfig(
+                    deterministic_path=Path("E:/obj_files/Forecast_Det_PRCPSepOctNov_2026.nc"),
+                    probability_path=Path("E:/obj_files/Forecast_Prob_PRCPSepOctNov_2026.nc"),
+                    forecast_year=2026,
+                    title="Seasonal Rainfall Total",
+                ),
+            }
+        }
+    )
+    rainfall_total_sources: dict[str, ForecastProductPairSourceConfig] = Field(
+        default_factory=lambda: {
+            "MAM": ForecastProductPairSourceConfig(
+                deterministic_path=Path("E:/Forecast_Det_PRCPMarAprMay_2026.nc"),
+                probability_path=Path("E:/Forecast_Prob_PRCPMarAprMay_2026.nc"),
+                forecast_year=2026,
+                title="Seasonal Rainfall Total",
+            ),
+            "MJJ": ForecastProductPairSourceConfig(
+                deterministic_path=Path("E:/obj_files/Forecast_Det_PRCPMayJunJul_2026.nc"),
+                probability_path=Path("E:/obj_files/Forecast_Prob_PRCPMayJunJul_2026.nc"),
+                forecast_year=2026,
+                title="Seasonal Rainfall Total",
+            ),
+            "JAS": ForecastProductPairSourceConfig(
+                deterministic_path=Path("E:/obj_files/Forecast_Det_PRCPJulAugSep_2026.nc"),
+                probability_path=Path("E:/obj_files/Forecast_Prob_PRCPJulAugSep_2026.nc"),
+                forecast_year=2026,
+                title="Seasonal Rainfall Total",
+            ),
+        }
+    )
     products: dict[str, ForecastProductSourceConfig] = Field(
         default_factory=lambda: {
             "onset": ForecastProductSourceConfig(
@@ -186,22 +271,22 @@ class ForecastProductConfig(BaseModel):
             ),
             "cessation": ForecastProductSourceConfig(
                 theme="cessation",
-                forecast_year=2025,
+                forecast_year=2026,
                 title="Cessation Date",
             ),
             "late_dry_spell": ForecastProductSourceConfig(
                 theme="late_dry_spell",
-                forecast_year=2025,
+                forecast_year=2026,
                 title="Late-Season Dry Spell",
             ),
             "rainfall_amount": ForecastProductSourceConfig(
                 theme="rainfall_amount",
-                forecast_year=2025,
+                forecast_year=2026,
                 title="Seasonal Rainfall Total",
             ),
             "rainy_days": ForecastProductSourceConfig(
                 theme="rainy_days",
-                forecast_year=2025,
+                forecast_year=2026,
                 title="Number of Rainy Days",
             ),
         }
@@ -286,6 +371,8 @@ class Settings(BaseSettings):
         seasonal_map_yaml = load_yaml(config_dir / "seasonal_map.yaml")
         if seasonal_map_yaml:
             payload["seasonal_map"] = seasonal_map_yaml.get("seasonal_map", seasonal_map_yaml)
+        if "CUMULUS_DEFAULT_FORECAST_SOURCE" in os.environ:
+            payload["default_forecast_source"] = os.environ["CUMULUS_DEFAULT_FORECAST_SOURCE"]
         payload["raw_data_dir"] = _resolve_raw_data_dir(payload)
         payload["model_artifact_dir"] = _resolve_artifact_dir(payload, "model_artifact_dir", Path("artifacts/models"))
         payload["bias_artifact_dir"] = _resolve_artifact_dir(payload, "bias_artifact_dir", Path("artifacts/bias"))

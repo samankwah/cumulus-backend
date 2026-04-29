@@ -3,7 +3,7 @@ time_zone: UTC
 forecast_horizon_days: 14
 raw_data_dir: data/raw
 default_station_path: Rainfall_data.xlsx
-default_forecast_source: era5
+default_forecast_source: gfs
 forecast_sources:
   era5:
     variables:

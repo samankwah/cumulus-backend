@@ -139,6 +139,9 @@ def _prepare_generic_dataset(settings: Settings, dataset: xr.Dataset) -> xr.Data
 
 
 def _default_source_id(settings: Settings) -> str | None:
+    has_explicit_named_source = settings.era5_forecast_path is not None or settings.gfs_forecast_path is not None
+    if settings.upstream_forecast_path is not None and not has_explicit_named_source:
+        return "configured"
     default_source = normalize_forecast_source_id(settings.default_forecast_source)
     if (
         default_source
@@ -149,6 +152,4 @@ def _default_source_id(settings: Settings) -> str | None:
     for source_id, config in settings.forecast_sources.items():
         if config.path is not None:
             return source_id
-    if settings.upstream_forecast_path is not None:
-        return "configured"
     return default_source

@@ -6,6 +6,7 @@ from functools import lru_cache
 import json
 import os
 from pathlib import Path
+import tempfile
 from typing import Any
 
 from pydantic import BaseModel, Field
@@ -25,10 +26,17 @@ WORKSPACE_ROOT = BACKEND_ROOT.parent
 ML_ROOT = WORKSPACE_ROOT / "ml"
 DEFAULT_CONFIG_DIR = BACKEND_ROOT / "configs"
 DEFAULT_DATA_DIR = ML_ROOT / "data"
+DEFAULT_SERVERLESS_DATA_DIR = Path(tempfile.gettempdir()) / "cumulus"
 DEFAULT_NATIONWIDE_ARTIFACT_DIR = BACKEND_ROOT / "data" / "artifacts" / "nationwide"
 DEFAULT_SEASONAL_MAP_ARTIFACT_DIR = BACKEND_ROOT / "data" / "artifacts" / "seasonal_map"
 DEFAULT_FORECAST_PRODUCT_ARTIFACT_DIR = BACKEND_ROOT / "data" / "artifacts" / "forecast_products"
-DEFAULT_DISTRICT_GEOJSON_PATH = WORKSPACE_ROOT / "frontend" / "public" / "data" / "ghana_district_polygons_simplified.geojson"
+DEFAULT_BACKEND_DISTRICT_GEOJSON_PATH = BACKEND_ROOT / "data" / "ghana_district_polygons_simplified.geojson"
+DEFAULT_WORKSPACE_DISTRICT_GEOJSON_PATH = WORKSPACE_ROOT / "frontend" / "public" / "data" / "ghana_district_polygons_simplified.geojson"
+DEFAULT_DISTRICT_GEOJSON_PATH = (
+    DEFAULT_BACKEND_DISTRICT_GEOJSON_PATH
+    if DEFAULT_BACKEND_DISTRICT_GEOJSON_PATH.exists()
+    else DEFAULT_WORKSPACE_DISTRICT_GEOJSON_PATH
+)
 DEFAULT_WASS2S_2026_ROOT = Path.home() / "Desktop" / "MEST_projects" / "wass2s" / "Agro_PRESAGG_2026_ic_1"
 DEFAULT_FORECAST_PRODUCT_SOURCE_DIR = DEFAULT_WASS2S_2026_ROOT / "forecasts"
 DEFAULT_FORECAST_PRODUCT_DAILY_CORRECTED_DIR = DEFAULT_WASS2S_2026_ROOT / "daily_model_data" / "corrected"
@@ -379,6 +387,7 @@ class Settings(BaseSettings):
         if "CUMULUS_DEFAULT_FORECAST_SOURCE" in os.environ:
             payload["default_forecast_source"] = os.environ["CUMULUS_DEFAULT_FORECAST_SOURCE"]
         _apply_environment_overrides(payload)
+        _apply_serverless_defaults(payload)
         payload["raw_data_dir"] = _resolve_raw_data_dir(payload)
         payload["model_artifact_dir"] = _resolve_artifact_dir(payload, "model_artifact_dir", Path("artifacts/models"))
         payload["bias_artifact_dir"] = _resolve_artifact_dir(payload, "bias_artifact_dir", Path("artifacts/bias"))
@@ -457,6 +466,33 @@ def _apply_environment_overrides(payload: dict[str, Any]) -> None:
             target[part] = current
             target = current
         target[path[-1]] = _parse_environment_value(raw_value)
+
+
+def _apply_serverless_defaults(payload: dict[str, Any]) -> None:
+    if not _is_serverless_runtime():
+        return
+    if "CUMULUS_DATA_DIR" not in os.environ:
+        payload["data_dir"] = DEFAULT_SERVERLESS_DATA_DIR / "data"
+    seasonal_map = _as_mutable_mapping(payload, "seasonal_map")
+    if "CUMULUS_SEASONAL_MAP__DISTRICT_GEOJSON_PATH" not in os.environ:
+        seasonal_map["district_geojson_path"] = DEFAULT_BACKEND_DISTRICT_GEOJSON_PATH
+    forecast_products = _as_mutable_mapping(payload, "forecast_products")
+    if "CUMULUS_FORECAST_PRODUCTS__ARTIFACT_DIR" not in os.environ:
+        forecast_products["artifact_dir"] = DEFAULT_SERVERLESS_DATA_DIR / "forecast_products"
+
+
+def _as_mutable_mapping(payload: dict[str, Any], key: str) -> dict[str, Any]:
+    current = payload.get(key)
+    if isinstance(current, BaseModel):
+        current = current.model_dump()
+    if not isinstance(current, dict):
+        current = {}
+    payload[key] = current
+    return current
+
+
+def _is_serverless_runtime() -> bool:
+    return os.environ.get("VERCEL") == "1" or bool(os.environ.get("AWS_LAMBDA_FUNCTION_NAME"))
 
 
 def _parse_environment_value(value: str) -> Any:

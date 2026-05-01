@@ -785,7 +785,7 @@ def _prepare_probability_product(
             manifest,
         )
     if not candidate_paths:
-        data_path = Path(str(manifest["data_path"]))
+        data_path = _manifest_first_candidate_path(settings, manifest, "data_path")
         _validate_product_dataset_for_selection(settings, selection, "probability", data_path)
         candidate_paths = (data_path,)
 
@@ -840,6 +840,7 @@ def _prepare_probability_product(
         probabilities = _fill_missing_probability_response_cells(settings, selection, latitudes, longitudes, probabilities)
         probabilities = _normalize_probability_grid(probabilities)
     preview_url = _manifest_preview_url(
+        settings,
         selection.theme,
         "probability",
         manifest,
@@ -905,7 +906,7 @@ def _prepare_deterministic_product(
             manifest,
         )
     if not candidate_paths:
-        data_path = Path(str(manifest["data_path"]))
+        data_path = _manifest_first_candidate_path(settings, manifest, "data_path")
         _validate_product_dataset_for_selection(settings, selection, "deterministic", data_path)
         candidate_paths = (data_path,)
     values: np.ndarray | None = None
@@ -959,6 +960,7 @@ def _prepare_deterministic_product(
     lower_bound = float(np.nanmin(finite))
     upper_bound = float(np.nanmax(finite))
     preview_url = _manifest_preview_url(
+        settings,
         selection.theme,
         "deterministic",
         manifest,
@@ -1011,10 +1013,12 @@ def get_probability_preview_path(
         season_profile=selection.season_profile,
         subseason=selection.subseason,
     )
-    data_path = Path(str(manifest["data_path"]))
+    data_path = _manifest_existing_file_path(settings, manifest, "data_path")
+    if data_path is None:
+        raise ForecastProductArtifactsNotAvailableError("Probability data not available for the selected forecast product.")
     _validate_product_dataset_for_selection(settings, selection, "probability", data_path)
-    target = Path(str(manifest.get("preview_path") or ""))
-    if not target.exists():
+    target = _manifest_existing_file_path(settings, manifest, "preview_path")
+    if target is None:
         raise ForecastProductArtifactsNotAvailableError("Probability preview not available for the selected forecast product.")
     return target
 
@@ -1034,10 +1038,12 @@ def get_deterministic_preview_path(
         season_profile=selection.season_profile,
         subseason=selection.subseason,
     )
-    data_path = Path(str(manifest["data_path"]))
+    data_path = _manifest_existing_file_path(settings, manifest, "data_path")
+    if data_path is None:
+        raise ForecastProductArtifactsNotAvailableError("Deterministic data not available for the selected forecast product.")
     _validate_product_dataset_for_selection(settings, selection, "deterministic", data_path)
-    target = Path(str(manifest.get("preview_path") or ""))
-    if not target.exists():
+    target = _manifest_existing_file_path(settings, manifest, "preview_path")
+    if target is None:
         raise ForecastProductArtifactsNotAvailableError("Deterministic preview not available for the selected forecast product.")
     return target
 
@@ -1394,8 +1400,8 @@ def _promote_derived_product_manifest_to_final_artifact(
     *,
     title: str,
 ) -> dict[str, Any]:
-    source_path = Path(str(source_manifest.get("data_path") or ""))
-    if not source_path.exists():
+    source_path = _manifest_existing_file_path(settings, source_manifest, "data_path")
+    if source_path is None:
         raise ForecastProductArtifactsNotAvailableError(f"Forecast source file is missing: {source_path}")
 
     source_values, source_latitudes, source_longitudes, valid_time = _load_product_grid_for_promotion(source_path, view_mode)
@@ -3198,7 +3204,9 @@ def _manifest_has_trusted_app_ready_marker(
     if float(marker.get("standard_grid_resolution_degrees") or -1.0) != float(STANDARD_PRODUCT_GRID_RESOLUTION_DEGREES):
         return False
     try:
-        data_path = Path(str(manifest["data_path"]))
+        data_path = _manifest_existing_file_path(settings, manifest, "data_path")
+        if data_path is None:
+            return False
         stat = data_path.stat()
     except Exception:
         return False
@@ -3327,6 +3335,8 @@ def _manifest_file_is_available(
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     except Exception:
         return False
+    manifest = dict(manifest)
+    manifest["manifest_path"] = str(manifest_path)
     return _manifest_payload_is_available_for_selection(settings, selection, manifest)
 
 
@@ -3929,7 +3939,7 @@ def _manifest_usable_data_path(
     view_mode: ViewMode,
     manifest: dict[str, Any],
 ) -> Path | None:
-    for data_path in _manifest_candidate_data_paths(manifest):
+    for data_path in _manifest_candidate_data_paths(settings, manifest):
         if data_path.exists() and data_path.stat().st_size > 0 and _cached_product_dataset_is_usable(
             settings,
             selection,
@@ -3949,7 +3959,7 @@ def _manifest_standardizable_data_paths(
     if not _manifest_response_standardization_fallback_allowed(settings, selection, manifest):
         return ()
     paths: list[Path] = []
-    for data_path in _manifest_candidate_data_paths(manifest):
+    for data_path in _manifest_candidate_data_paths(settings, manifest):
         if (
             data_path.exists()
             and data_path.stat().st_size > 0
@@ -3971,13 +3981,13 @@ def _manifest_source_standardized_response_paths(
     if source_path_value is None:
         return ()
     try:
-        source_path = Path(str(source_path_value))
-        data_path = Path(str(manifest.get("data_path") or ""))
+        source_path = _manifest_existing_file_path(settings, manifest, "source_path")
+        data_path = _manifest_existing_file_path(settings, manifest, "data_path")
     except Exception:
         return ()
-    if source_path == data_path:
+    if source_path is None:
         return ()
-    if not source_path.exists() or source_path.stat().st_size <= 0:
+    if data_path is not None and source_path == data_path:
         return ()
     if not _product_dataset_has_standardizable_payload(view_mode, source_path):
         return ()
@@ -4039,19 +4049,105 @@ def _product_dataset_has_standardizable_payload(view_mode: ViewMode, data_path: 
         return False
 
 
-def _manifest_candidate_data_paths(manifest: dict[str, Any]) -> tuple[Path, ...]:
+def _manifest_candidate_data_paths(settings: Settings, manifest: dict[str, Any]) -> tuple[Path, ...]:
     paths: list[Path] = []
     for key in ("data_path", "source_path"):
-        value = manifest.get(key)
-        if value is None:
-            continue
-        try:
-            path = Path(str(value))
-        except Exception:
-            continue
-        if path not in paths:
-            paths.append(path)
+        for path in _manifest_candidate_paths(settings, manifest, key):
+            if path not in paths:
+                paths.append(path)
     return tuple(paths)
+
+
+def _manifest_first_candidate_path(settings: Settings, manifest: dict[str, Any], key: str) -> Path:
+    candidates = _manifest_candidate_paths(settings, manifest, key)
+    if candidates:
+        return candidates[0]
+    return Path(str(manifest.get(key) or ""))
+
+
+def _manifest_existing_file_path(settings: Settings, manifest: dict[str, Any], key: str) -> Path | None:
+    for path in _manifest_candidate_paths(settings, manifest, key):
+        try:
+            if path.exists() and path.stat().st_size > 0:
+                return path
+        except OSError:
+            continue
+    return None
+
+
+def _manifest_candidate_paths(settings: Settings, manifest: dict[str, Any], key: str) -> tuple[Path, ...]:
+    value = manifest.get(key)
+    if value is None:
+        return ()
+    value_text = str(value).strip()
+    if not value_text:
+        return ()
+
+    candidates: list[Path] = []
+
+    def add_candidate(path: Path | None) -> None:
+        if path is not None and path not in candidates:
+            candidates.append(path)
+
+    try:
+        direct_path = Path(value_text)
+    except Exception:
+        direct_path = None
+    add_candidate(direct_path)
+
+    manifest_path = _manifest_path_from_manifest_value(settings, manifest)
+    basename = _portable_path_basename(value_text)
+    if manifest_path is not None and basename:
+        add_candidate(manifest_path.parent / basename)
+
+    remapped_artifact_path = _remap_path_under_forecast_artifact_dir(settings, value_text)
+    add_candidate(remapped_artifact_path)
+
+    if direct_path is not None and not direct_path.is_absolute():
+        add_candidate(settings.forecast_products.artifact_dir / direct_path)
+
+    return tuple(candidates)
+
+
+def _manifest_path_from_manifest_value(settings: Settings, manifest: dict[str, Any]) -> Path | None:
+    value = manifest.get("manifest_path")
+    if value is None:
+        return None
+    value_text = str(value).strip()
+    if not value_text:
+        return None
+    try:
+        path = Path(value_text)
+    except Exception:
+        path = None
+    if path is not None and path.exists():
+        return path
+    return _remap_path_under_forecast_artifact_dir(settings, value_text)
+
+
+def _remap_path_under_forecast_artifact_dir(settings: Settings, value: str) -> Path | None:
+    parts = _portable_path_parts(value)
+    lower_parts = [part.lower() for part in parts]
+    marker = ("data", "artifacts", "forecast_products")
+    marker_length = len(marker)
+    for index in range(0, len(lower_parts) - marker_length + 1):
+        if tuple(lower_parts[index : index + marker_length]) == marker:
+            relative_parts = parts[index + marker_length :]
+            return settings.forecast_products.artifact_dir.joinpath(*relative_parts) if relative_parts else settings.forecast_products.artifact_dir
+    for index in range(len(lower_parts) - 1, -1, -1):
+        if lower_parts[index] == "forecast_products":
+            relative_parts = parts[index + 1 :]
+            return settings.forecast_products.artifact_dir.joinpath(*relative_parts) if relative_parts else settings.forecast_products.artifact_dir
+    return None
+
+
+def _portable_path_basename(value: str) -> str:
+    parts = _portable_path_parts(value)
+    return parts[-1] if parts else ""
+
+
+def _portable_path_parts(value: str) -> tuple[str, ...]:
+    return tuple(part for part in re.split(r"[\\/]+", value.strip()) if part and part != ".")
 
 
 def _manifest_payload_is_available_for_selection(
@@ -4059,15 +4155,10 @@ def _manifest_payload_is_available_for_selection(
     selection: ForecastProductSelection,
     manifest: dict[str, Any],
 ) -> bool:
-    try:
-        data_path = Path(str(manifest["data_path"]))
-    except Exception:
+    data_path = _manifest_existing_file_path(settings, manifest, "data_path")
+    if data_path is None:
         return False
-    return (
-        data_path.exists()
-        and data_path.stat().st_size > 0
-        and _manifest_source_policy_allows_selection(settings, selection, manifest)
-    )
+    return _manifest_source_policy_allows_selection(settings, selection, manifest)
 
 
 def _usable_manifest_path(
@@ -4098,8 +4189,12 @@ def _selection_product_pair_is_compatible(settings: Settings, selection: Forecas
     try:
         probability_manifest = json.loads(probability_manifest_path.read_text(encoding="utf-8"))
         deterministic_manifest = json.loads(deterministic_manifest_path.read_text(encoding="utf-8"))
-        probability_path = Path(str(probability_manifest["data_path"]))
-        deterministic_path = Path(str(deterministic_manifest["data_path"]))
+        probability_manifest = _normalize_manifest_selection(probability_manifest, selection, probability_manifest_path)
+        deterministic_manifest = _normalize_manifest_selection(deterministic_manifest, selection, deterministic_manifest_path)
+        probability_path = _manifest_existing_file_path(settings, probability_manifest, "data_path")
+        deterministic_path = _manifest_existing_file_path(settings, deterministic_manifest, "data_path")
+        if probability_path is None or deterministic_path is None:
+            return False
         key = _product_pair_compatibility_cache_key(settings, selection, probability_path, deterministic_path)
         if key is None:
             return False
@@ -4187,7 +4282,9 @@ def _manifest_grid_matches_current_target(
     if str(manifest.get("promotion_method") or "") != STANDARD_PRODUCT_PROMOTION_METHOD:
         return False
     try:
-        data_path = Path(str(manifest["data_path"]))
+        data_path = _manifest_existing_file_path(settings, manifest, "data_path")
+        if data_path is None:
+            return False
         target_latitudes, target_longitudes = _standard_product_grid(settings, selection, view_mode)
         with _open_product_dataset(data_path) as dataset:
             latitudes = np.asarray(dataset["Y"].values, dtype=float)
@@ -4235,11 +4332,8 @@ def _promotable_derived_manifest_for_selection(
             continue
         if not _manifest_is_promotable_daily_derived(settings, selection, manifest):
             continue
-        try:
-            data_path = Path(str(manifest["data_path"]))
-        except Exception:
-            continue
-        if data_path.exists() and data_path.stat().st_size > 0:
+        manifest = _normalize_manifest_selection(manifest, selection, manifest_path)
+        if _manifest_existing_file_path(settings, manifest, "data_path") is not None:
             return _normalize_manifest_selection(manifest, selection, manifest_path)
     return None
 
@@ -4767,6 +4861,7 @@ def _flip_latitude_if_needed(rgba: np.ndarray, latitudes: np.ndarray) -> np.ndar
 
 
 def _manifest_preview_url(
+    settings: Settings,
     theme: str,
     view_mode: ViewMode,
     manifest: dict[str, Any],
@@ -4774,8 +4869,8 @@ def _manifest_preview_url(
     season_profile: str | None = None,
     subseason: str | None = None,
 ) -> str | None:
-    preview_path = Path(str(manifest.get("preview_path") or ""))
-    if not preview_path.exists():
+    preview_path = _manifest_existing_file_path(settings, manifest, "preview_path")
+    if preview_path is None:
         return None
     return _asset_query_path(
         view_mode,

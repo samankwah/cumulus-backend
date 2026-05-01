@@ -93,6 +93,34 @@ def _configure_forecast_artifacts(monkeypatch, tmp_path: Path) -> Path:
     return artifact_dir
 
 
+def _artifact_relative_parts(value: object) -> tuple[str, ...]:
+    parts = [part for part in str(value).replace("\\", "/").split("/") if part]
+    marker = ("data", "artifacts", "forecast_products")
+    lower_parts = [part.lower() for part in parts]
+    for index in range(0, len(parts) - len(marker) + 1):
+        if tuple(lower_parts[index : index + len(marker)]) == marker:
+            return tuple(parts[index + len(marker) :])
+    return tuple()
+
+
+def _rewrite_manifest_paths_to_missing_windows_root(artifact_dir: Path) -> None:
+    stale_root = "Z:\\missing\\backend\\data\\artifacts\\forecast_products"
+    for manifest_path in artifact_dir.rglob("active.json"):
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        for key in ("data_path", "source_path", "preview_path", "manifest_path"):
+            if key not in manifest:
+                continue
+            relative_parts = _artifact_relative_parts(manifest[key])
+            if relative_parts:
+                manifest[key] = stale_root + "\\" + "\\".join(relative_parts)
+        marker = manifest.get("app_ready_validation")
+        if isinstance(marker, dict) and "data_path" in marker:
+            relative_parts = _artifact_relative_parts(marker["data_path"])
+            if relative_parts:
+                marker["data_path"] = stale_root + "\\" + "\\".join(relative_parts)
+        manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+
+
 def _configure_forecast_product_sources(monkeypatch, tmp_path: Path) -> Path:
     artifact_dir = tmp_path / "forecast-products"
     daily_dir = tmp_path / "daily-corrected"
@@ -303,6 +331,25 @@ def test_forecast_product_options_return_all_target_themes_with_readiness(monkey
     assert themes["rainfall_amount"]["enabled"] is False
     assert themes["rainfall_amount"]["subseasons"] == []
     assert themes["rainy_days"]["enabled"] is False
+
+
+def test_forecast_products_resolve_manifests_with_stale_absolute_artifact_paths(monkeypatch, tmp_path):
+    artifact_dir = _configure_forecast_artifacts(monkeypatch, tmp_path)
+    _rewrite_manifest_paths_to_missing_windows_root(artifact_dir)
+    client = TestClient(app)
+
+    options = client.get("/forecast/products/options")
+    active = client.get("/forecast/probability/active?theme=onset&season_profile=northern_single")
+    preview = client.get("/forecast/probability/preview.png?theme=onset&season_profile=northern_single")
+
+    assert options.status_code == 200
+    onset = next(item for item in options.json() if item["theme"] == "onset")
+    assert onset["enabled"] is True
+    assert "northern_single" in onset["seasons"]
+    assert active.status_code == 200
+    assert active.json()["theme"] == "onset"
+    assert preview.status_code == 200
+    assert preview.content.startswith(b"\x89PNG")
 
 
 def test_forecast_product_options_treat_validation_failures_as_not_ready(monkeypatch, tmp_path):

@@ -7,5 +7,6 @@ data/artifacts/nationwide/*
 !data/artifacts/nationwide/.gitkeep
 data/artifacts/seasonal_map/*
 !data/artifacts/seasonal_map/.gitkeep
+data/artifacts/forecast_products/_options_cache.json
 *.log
 *.err.log

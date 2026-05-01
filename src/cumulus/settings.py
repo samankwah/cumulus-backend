@@ -491,9 +491,6 @@ def _apply_serverless_defaults(payload: dict[str, Any]) -> None:
     seasonal_map = _as_mutable_mapping(payload, "seasonal_map")
     if "CUMULUS_SEASONAL_MAP__DISTRICT_GEOJSON_PATH" not in os.environ:
         seasonal_map["district_geojson_path"] = DEFAULT_BACKEND_DISTRICT_GEOJSON_PATH
-    forecast_products = _as_mutable_mapping(payload, "forecast_products")
-    if "CUMULUS_FORECAST_PRODUCTS__ARTIFACT_DIR" not in os.environ:
-        forecast_products["artifact_dir"] = DEFAULT_SERVERLESS_DATA_DIR / "forecast_products"
 
 
 def _as_mutable_mapping(payload: dict[str, Any], key: str) -> dict[str, Any]:

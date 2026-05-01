@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
-from cumulus.settings import DEFAULT_CORS_ALLOWED_ORIGINS, get_settings
+from cumulus.settings import DEFAULT_CORS_ALLOWED_ORIGINS, DEFAULT_FORECAST_PRODUCT_ARTIFACT_DIR, get_settings
 
 
 @pytest.fixture(autouse=True)
@@ -63,3 +65,12 @@ def test_settings_uses_default_cors_allowed_origins_for_blank_env(monkeypatch):
     settings = get_settings()
 
     assert settings.cors_allowed_origins == list(DEFAULT_CORS_ALLOWED_ORIGINS)
+
+
+def test_serverless_settings_keep_committed_forecast_product_artifacts(monkeypatch):
+    monkeypatch.setenv("VERCEL", "1")
+    monkeypatch.delenv("CUMULUS_FORECAST_PRODUCTS__ARTIFACT_DIR", raising=False)
+
+    settings = get_settings()
+
+    assert Path(settings.forecast_products.artifact_dir) == DEFAULT_FORECAST_PRODUCT_ARTIFACT_DIR

@@ -9,7 +9,7 @@ from pathlib import Path
 import tempfile
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from cumulus.data.source_manifests import (
@@ -40,6 +40,11 @@ DEFAULT_DISTRICT_GEOJSON_PATH = (
 DEFAULT_WASS2S_2026_ROOT = Path.home() / "Desktop" / "MEST_projects" / "wass2s" / "Agro_PRESAGG_2026_ic_1"
 DEFAULT_FORECAST_PRODUCT_SOURCE_DIR = DEFAULT_WASS2S_2026_ROOT / "forecasts"
 DEFAULT_FORECAST_PRODUCT_DAILY_CORRECTED_DIR = DEFAULT_WASS2S_2026_ROOT / "daily_model_data" / "corrected"
+DEFAULT_CORS_ALLOWED_ORIGINS = (
+    "http://127.0.0.1:3000",
+    "http://localhost:3000",
+    "https://seasonalforecast.netlify.app",
+)
 
 
 class BiasCorrectionConfig(BaseModel):
@@ -338,13 +343,8 @@ class Settings(BaseSettings):
     api_version: str = "0.1.0"
     log_level: str = "INFO"
     time_zone: str = "UTC"
-    cors_allowed_origins: list[str] = Field(
-        default_factory=lambda: [
-            "http://127.0.0.1:3000",
-            "http://localhost:3000",
-            "https://seasonalforecast.netlify.app",
-        ]
-    )
+    # The str arm lets pydantic-settings pass comma-separated env values through to the validator.
+    cors_allowed_origins: list[str] | str = Field(default_factory=lambda: list(DEFAULT_CORS_ALLOWED_ORIGINS))
     default_forecast_source: str | None = "era5"
     forecast_sources: dict[str, ForecastSourceConfig] = Field(default_factory=dict)
     era5_forecast_path: Path | None = None
@@ -369,6 +369,18 @@ class Settings(BaseSettings):
     nationwide: NationwideConfig = Field(default_factory=NationwideConfig)
     seasonal_map: SeasonalMapConfig = Field(default_factory=SeasonalMapConfig)
     forecast_products: ForecastProductConfig = Field(default_factory=ForecastProductConfig)
+
+    @field_validator("cors_allowed_origins", mode="before")
+    @classmethod
+    def _normalize_cors_allowed_origins(cls, value: Any) -> list[str] | Any:
+        if value is None:
+            return list(DEFAULT_CORS_ALLOWED_ORIGINS)
+        if isinstance(value, str):
+            stripped = value.strip()
+            if not stripped:
+                return list(DEFAULT_CORS_ALLOWED_ORIGINS)
+            return [origin.strip() for origin in stripped.split(",") if origin.strip()]
+        return value
 
     @classmethod
     def from_sources(cls) -> "Settings":

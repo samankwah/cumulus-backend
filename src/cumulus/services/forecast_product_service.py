@@ -136,8 +136,19 @@ STANDARD_PRODUCT_PROMOTION_METHOD = "bilinear_standard_grid"
 def _open_product_dataset(path: str | Path):
     """Serialize NetCDF/HDF5 access; the Windows netCDF4 build can crash on concurrent reads."""
     with _NETCDF_IO_LOCK:
-        with xr.open_dataset(path) as dataset:
+        open_kwargs: dict[str, Any] = {}
+        if _netcdf_header(path).startswith(b"CDF"):
+            open_kwargs["engine"] = "scipy"
+        with xr.open_dataset(path, **open_kwargs) as dataset:
             yield dataset
+
+
+def _netcdf_header(path: str | Path) -> bytes:
+    try:
+        with Path(path).open("rb") as handle:
+            return handle.read(8)
+    except OSError:
+        return b""
 
 
 def _clear_forecast_product_caches() -> None:

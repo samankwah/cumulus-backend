@@ -77,7 +77,7 @@ def test_serverless_settings_keep_committed_forecast_product_artifacts(monkeypat
     assert Path(settings.forecast_products.artifact_dir) == DEFAULT_FORECAST_PRODUCT_ARTIFACT_DIR
 
 
-def test_runtime_dependencies_include_netcdf_engine_for_forecast_products():
+def test_runtime_dependencies_include_scipy_for_classic_netcdf_forecast_products():
     pyproject_path = Path(__file__).resolve().parents[1] / "pyproject.toml"
     payload = tomllib.loads(pyproject_path.read_text(encoding="utf-8"))
     dependency_names = {
@@ -85,4 +85,4 @@ def test_runtime_dependencies_include_netcdf_engine_for_forecast_products():
         for dependency in payload["project"]["dependencies"]
     }
 
-    assert dependency_names & {"netcdf4", "h5netcdf"}
+    assert "scipy" in dependency_names

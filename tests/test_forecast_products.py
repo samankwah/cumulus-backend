@@ -333,6 +333,27 @@ def test_forecast_product_options_return_all_target_themes_with_readiness(monkey
     assert themes["rainy_days"]["enabled"] is False
 
 
+def test_open_product_dataset_uses_scipy_for_classic_netcdf(monkeypatch, tmp_path):
+    dataset_path = tmp_path / "classic.nc"
+    xr.Dataset(
+        {"forecast_deterministic": (("T", "Y", "X"), np.ones((1, 1, 1), dtype=float))},
+        coords={"T": [np.datetime64("2026-04-01T00:00:00")], "Y": [5.0], "X": [-1.0]},
+    ).to_netcdf(dataset_path, engine="scipy")
+    original_open_dataset = xr.open_dataset
+    engines: list[str | None] = []
+
+    def spy_open_dataset(*args, **kwargs):
+        engines.append(kwargs.get("engine"))
+        return original_open_dataset(*args, **kwargs)
+
+    monkeypatch.setattr(forecast_product_service.xr, "open_dataset", spy_open_dataset)
+
+    with forecast_product_service._open_product_dataset(dataset_path) as dataset:
+        assert "forecast_deterministic" in dataset
+
+    assert engines == ["scipy"]
+
+
 def test_forecast_products_resolve_manifests_with_stale_absolute_artifact_paths(monkeypatch, tmp_path):
     artifact_dir = _configure_forecast_artifacts(monkeypatch, tmp_path)
     _rewrite_manifest_paths_to_missing_windows_root(artifact_dir)

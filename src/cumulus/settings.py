@@ -342,6 +342,7 @@ class Settings(BaseSettings):
         default_factory=lambda: [
             "http://127.0.0.1:3000",
             "http://localhost:3000",
+            "https://seasonalforecast.netlify.app",
         ]
     )
     default_forecast_source: str | None = "era5"

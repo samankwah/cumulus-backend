@@ -380,6 +380,19 @@ def test_forecast_products_resolve_manifests_with_stale_absolute_artifact_paths(
     assert preview.content.startswith(b"\x89PNG")
 
 
+def test_forecast_product_preview_allows_standardized_source_fallback(monkeypatch):
+    monkeypatch.setenv("CUMULUS_FORECAST_PRODUCTS__ARTIFACT_DIR", str(REPO_FORECAST_ARTIFACT_DIR))
+    monkeypatch.setenv("CUMULUS_FORECAST_PRODUCTS__REQUIRE_STANDARD_GRID_COVERAGE", "true")
+    get_settings.cache_clear()
+    forecast_product_service._clear_forecast_product_caches()
+    client = TestClient(app)
+
+    response = client.get("/forecast/probability/preview.png?theme=rainfall_amount&subseason=MAM")
+
+    assert response.status_code == 200
+    assert response.content.startswith(b"\x89PNG")
+
+
 def test_forecast_product_options_treat_validation_failures_as_not_ready(monkeypatch, tmp_path):
     artifact_dir = tmp_path / "forecast-products"
     product_dir = tmp_path / "products"

@@ -1027,10 +1027,6 @@ def get_probability_preview_path(
         season_profile=selection.season_profile,
         subseason=selection.subseason,
     )
-    data_path = _manifest_existing_file_path(settings, manifest, "data_path")
-    if data_path is None:
-        raise ForecastProductArtifactsNotAvailableError("Probability data not available for the selected forecast product.")
-    _validate_product_dataset_for_selection(settings, selection, "probability", data_path)
     target = _manifest_existing_file_path(settings, manifest, "preview_path")
     if target is None:
         raise ForecastProductArtifactsNotAvailableError("Probability preview not available for the selected forecast product.")
@@ -1052,10 +1048,6 @@ def get_deterministic_preview_path(
         season_profile=selection.season_profile,
         subseason=selection.subseason,
     )
-    data_path = _manifest_existing_file_path(settings, manifest, "data_path")
-    if data_path is None:
-        raise ForecastProductArtifactsNotAvailableError("Deterministic data not available for the selected forecast product.")
-    _validate_product_dataset_for_selection(settings, selection, "deterministic", data_path)
     target = _manifest_existing_file_path(settings, manifest, "preview_path")
     if target is None:
         raise ForecastProductArtifactsNotAvailableError("Deterministic preview not available for the selected forecast product.")

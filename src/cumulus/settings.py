@@ -379,7 +379,9 @@ class Settings(BaseSettings):
             stripped = value.strip()
             if not stripped:
                 return list(DEFAULT_CORS_ALLOWED_ORIGINS)
-            return [origin.strip() for origin in stripped.split(",") if origin.strip()]
+            value = [origin.strip() for origin in stripped.split(",") if origin.strip()]
+        if isinstance(value, list):
+            return _merge_cors_allowed_origins(value)
         return value
 
     @classmethod
@@ -513,6 +515,16 @@ def _parse_environment_value(value: str) -> Any:
         return json.loads(value)
     except Exception:
         return value
+
+
+def _merge_cors_allowed_origins(origins: list[Any]) -> list[str]:
+    merged: list[str] = []
+    for origin in [*DEFAULT_CORS_ALLOWED_ORIGINS, *origins]:
+        if isinstance(origin, str):
+            normalized = origin.strip()
+            if normalized and normalized not in merged:
+                merged.append(normalized)
+    return merged
 
 
 def _normalize_source_id(source_id: str) -> str:

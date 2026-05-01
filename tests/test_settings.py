@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import tomllib
 
 import pytest
 
@@ -74,3 +75,14 @@ def test_serverless_settings_keep_committed_forecast_product_artifacts(monkeypat
     settings = get_settings()
 
     assert Path(settings.forecast_products.artifact_dir) == DEFAULT_FORECAST_PRODUCT_ARTIFACT_DIR
+
+
+def test_runtime_dependencies_include_netcdf_engine_for_forecast_products():
+    pyproject_path = Path(__file__).resolve().parents[1] / "pyproject.toml"
+    payload = tomllib.loads(pyproject_path.read_text(encoding="utf-8"))
+    dependency_names = {
+        dependency.split("[", 1)[0].split(">=", 1)[0].split("==", 1)[0].lower()
+        for dependency in payload["project"]["dependencies"]
+    }
+
+    assert dependency_names & {"netcdf4", "h5netcdf"}

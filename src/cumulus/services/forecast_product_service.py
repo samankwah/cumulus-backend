@@ -2,15 +2,17 @@
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from functools import lru_cache
 import json
 import math
 from pathlib import Path
 import re
 import shutil
 import struct
-from functools import lru_cache
+from threading import RLock
 from typing import Any, Literal
 from urllib.parse import urlencode
 import zlib
@@ -43,11 +45,23 @@ CALENDAR_SUBSEASON_MONTHS: dict[str, tuple[int, int, int]] = {
     "JAS": (7, 8, 9),
     "SON": (9, 10, 11),
 }
-DAILY_DERIVED_THEMES = frozenset({"onset", "cessation", "late_dry_spell", "rainy_days"})
+DAILY_DERIVED_THEMES = frozenset({"onset", "early_dry_spell", "cessation", "late_dry_spell", "rainy_days"})
+PROMOTABLE_DAILY_DERIVED_THEMES = frozenset({"onset", "early_dry_spell", "cessation", "late_dry_spell", "rainy_days"})
 PROFILE_DERIVED_ONSET_PROFILES = frozenset({"southern_minor"})
 FINAL_PRODUCT_ONLY_THEMES = frozenset({"rainfall_amount"})
 PROBABILITY_CODES = ("PB", "PN", "PA")
+STANDARD_PRODUCT_GRID_RESOLUTION_DEGREES = 0.3
+STANDARD_PRODUCT_GRID_PADDING_DEGREES = 0.35
 DEFAULT_FINAL_PRODUCT_SELECTOR = "__default__"
+FINAL_SEASON_SELECTOR_TOKEN_MAP = {
+    "northernsingle": "northern_single",
+    "northernunimodal": "northern_single",
+    "northernunimodalseasonal": "northern_single",
+    "southernmajor": "southern_major",
+    "southernmajorseason": "southern_major",
+    "southernminor": "southern_minor",
+    "southernminorseason": "southern_minor",
+}
 FINAL_SUBSEASON_TOKEN_MAP = {
     "maraprmay": "MAM",
     "aprmayjun": "AMJ",
@@ -107,6 +121,31 @@ FINAL_PROBABILITY_TILE_ALPHA_MIN = 96
 FINAL_PROBABILITY_TILE_ALPHA_MAX = 235
 FALLBACK_PROBABILITY_TILE_ALPHA_MIN = 72
 FALLBACK_PROBABILITY_TILE_ALPHA_MAX = 176
+_NETCDF_IO_LOCK = RLock()
+_PRODUCT_DATASET_USABILITY_CACHE: dict[tuple[Any, ...], bool] = {}
+_PRODUCT_PAIR_COMPATIBILITY_CACHE: dict[tuple[Any, ...], bool] = {}
+_PRODUCT_OPTIONS_CACHE: dict[str, Any] = {}
+_PRODUCT_OPTIONS_CACHE_SECONDS = 60.0
+_PRODUCT_OPTIONS_SNAPSHOT_FILENAME = "_options_cache.json"
+_PRODUCT_OPTIONS_SNAPSHOT_SCHEMA_VERSION = 6
+_PRODUCT_APP_READY_VALIDATION_VERSION = 4
+STANDARD_PRODUCT_PROMOTION_METHOD = "bilinear_standard_grid"
+
+
+@contextmanager
+def _open_product_dataset(path: str | Path):
+    """Serialize NetCDF/HDF5 access; the Windows netCDF4 build can crash on concurrent reads."""
+    with _NETCDF_IO_LOCK:
+        with xr.open_dataset(path) as dataset:
+            yield dataset
+
+
+def _clear_forecast_product_caches() -> None:
+    with _NETCDF_IO_LOCK:
+        _PRODUCT_DATASET_USABILITY_CACHE.clear()
+        _PRODUCT_PAIR_COMPATIBILITY_CACHE.clear()
+        _PRODUCT_OPTIONS_CACHE.clear()
+        _discover_final_product_sources.cache_clear()
 
 
 @dataclass(frozen=True)
@@ -199,6 +238,13 @@ class DerivedDailyForecastGrid:
     probabilities: np.ndarray
 
 
+@dataclass(frozen=True)
+class ProductOptionsManifestCandidate:
+    path: Path
+    manifest: dict[str, Any]
+    trusted: bool
+
+
 THEME_SPECS: dict[str, ProductThemeSpec] = {
     "onset": ProductThemeSpec(
         theme="onset",
@@ -276,6 +322,7 @@ THEME_SPECS: dict[str, ProductThemeSpec] = {
 
 
 def refresh_forecast_products(settings: Settings, *, theme: str | None = None) -> dict[str, Any]:
+    _clear_forecast_product_caches()
     attempted: list[dict[str, Any]] = []
     succeeded: list[dict[str, Any]] = []
     failed: list[dict[str, Any]] = []
@@ -310,6 +357,8 @@ def refresh_forecast_products(settings: Settings, *, theme: str | None = None) -
                     "manifest_path": manifest["manifest_path"],
                 }
             )
+    _clear_forecast_product_caches()
+    _write_product_options_snapshot(settings, _build_supported_product_themes(settings))
     return {
         "attempted_count": len(attempted),
         "succeeded_count": len(succeeded),
@@ -539,6 +588,36 @@ def render_deterministic_tile(
 
 
 def list_supported_product_themes(settings: Settings) -> list[dict[str, Any]]:
+    active_manifest_fingerprint = _active_manifest_fingerprint(settings)
+    cache_key = _product_options_cache_key(
+        settings,
+        active_manifest_fingerprint=active_manifest_fingerprint,
+        snapshot_fingerprint=_product_options_snapshot_fingerprint(settings),
+    )
+    now = datetime.now(UTC).timestamp()
+    with _NETCDF_IO_LOCK:
+        cached = _PRODUCT_OPTIONS_CACHE.get("payload")
+        if (
+            isinstance(cached, dict)
+            and cached.get("cache_key") == cache_key
+            and float(cached.get("expires_at", 0.0)) > now
+            and isinstance(cached.get("items"), list)
+        ):
+            return [dict(item) for item in cached["items"]]
+
+        snapshot_items = _read_product_options_snapshot(settings, active_manifest_fingerprint)
+        items = snapshot_items if snapshot_items is not None else _build_supported_product_themes(settings)
+        if snapshot_items is None:
+            _write_product_options_snapshot(settings, items, active_manifest_fingerprint=active_manifest_fingerprint)
+        _PRODUCT_OPTIONS_CACHE["payload"] = {
+            "cache_key": cache_key,
+            "expires_at": now + _PRODUCT_OPTIONS_CACHE_SECONDS,
+            "items": [dict(item) for item in items],
+        }
+        return items
+
+
+def _build_supported_product_themes(settings: Settings) -> list[dict[str, Any]]:
     items = []
     for theme in THEME_SPECS:
         spec = _theme_spec(theme)
@@ -557,6 +636,118 @@ def list_supported_product_themes(settings: Settings) -> list[dict[str, Any]]:
             }
         )
     return items
+
+
+def _product_options_cache_key(
+    settings: Settings,
+    *,
+    active_manifest_fingerprint: tuple[tuple[str, int, int], ...],
+    snapshot_fingerprint: tuple[int, int] | None,
+) -> tuple[Any, ...]:
+    return (
+        *_product_options_settings_cache_key(settings),
+        active_manifest_fingerprint,
+        snapshot_fingerprint,
+    )
+
+
+def _product_options_settings_cache_key(settings: Settings, *, include_validator_identity: bool = True) -> tuple[Any, ...]:
+    key = (
+        str(settings.forecast_products.artifact_dir),
+        tuple(str(path) for path in settings.forecast_products.final_product_dirs),
+        str(settings.forecast_products.daily_corrected_dir),
+        bool(settings.forecast_products.require_standard_grid_coverage),
+        int(settings.forecast_products.standard_grid_min_y),
+        int(settings.forecast_products.standard_grid_min_x),
+        float(settings.forecast_products.standard_grid_coverage_tolerance_degrees),
+        float(STANDARD_PRODUCT_GRID_RESOLUTION_DEGREES),
+        str(settings.seasonal_map.district_geojson_path),
+        float(settings.seasonal_map.northern_latitude_threshold),
+        _PRODUCT_OPTIONS_SNAPSHOT_SCHEMA_VERSION,
+        _PRODUCT_APP_READY_VALIDATION_VERSION,
+    )
+    if include_validator_identity:
+        return (*key, id(_validate_product_dataset_for_selection))
+    return key
+
+
+def _product_options_snapshot_path(settings: Settings) -> Path:
+    return settings.forecast_products.artifact_dir / _PRODUCT_OPTIONS_SNAPSHOT_FILENAME
+
+
+def _active_manifest_fingerprint(settings: Settings) -> tuple[tuple[str, int, int], ...]:
+    root = settings.forecast_products.artifact_dir
+    if not root.exists():
+        return tuple()
+    fingerprint: list[tuple[str, int, int]] = []
+    for path in sorted(root.rglob("active.json")):
+        try:
+            stat = path.stat()
+            relative_path = path.relative_to(root).as_posix()
+        except Exception:
+            continue
+        fingerprint.append((relative_path, int(stat.st_mtime_ns), int(stat.st_size)))
+    return tuple(fingerprint)
+
+
+def _product_options_snapshot_fingerprint(settings: Settings) -> tuple[int, int] | None:
+    path = _product_options_snapshot_path(settings)
+    try:
+        stat = path.stat()
+    except OSError:
+        return None
+    return (int(stat.st_mtime_ns), int(stat.st_size))
+
+
+def _read_product_options_snapshot(
+    settings: Settings,
+    active_manifest_fingerprint: tuple[tuple[str, int, int], ...],
+) -> list[dict[str, Any]] | None:
+    path = _product_options_snapshot_path(settings)
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    expected_settings_key = _json_cache_value(_product_options_settings_cache_key(settings, include_validator_identity=False))
+    expected_manifest_fingerprint = _json_cache_value(active_manifest_fingerprint)
+    if payload.get("settings_key") != expected_settings_key:
+        return None
+    if payload.get("active_manifest_fingerprint") != expected_manifest_fingerprint:
+        return None
+    items = payload.get("items")
+    if not isinstance(items, list):
+        return None
+    return [dict(item) for item in items if isinstance(item, dict)]
+
+
+def _write_product_options_snapshot(
+    settings: Settings,
+    items: list[dict[str, Any]],
+    *,
+    active_manifest_fingerprint: tuple[tuple[str, int, int], ...] | None = None,
+) -> None:
+    active_manifest_fingerprint = active_manifest_fingerprint or _active_manifest_fingerprint(settings)
+    path = _product_options_snapshot_path(settings)
+    ensure_directory(path.parent)
+    payload = {
+        "generated_at": datetime.now(UTC).isoformat(),
+        "settings_key": _json_cache_value(_product_options_settings_cache_key(settings, include_validator_identity=False)),
+        "active_manifest_fingerprint": _json_cache_value(active_manifest_fingerprint),
+        "items": [dict(item) for item in items],
+    }
+    temp_path = path.with_name(f"{path.name}.tmp")
+    temp_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    temp_path.replace(path)
+
+
+def _json_cache_value(value: Any) -> Any:
+    if isinstance(value, tuple):
+        return [_json_cache_value(item) for item in value]
+    if isinstance(value, list):
+        return [_json_cache_value(item) for item in value]
+    if isinstance(value, dict):
+        return {str(key): _json_cache_value(item) for key, item in value.items()}
+    return value
 
 
 def _is_source_wired(source: ForecastProductSourceConfig) -> bool:
@@ -579,17 +770,75 @@ def _prepare_probability_product(
         subseason=selection.subseason,
     )
     spec = _theme_spec(selection.theme)
-    data_path = Path(str(manifest["data_path"]))
-    _validate_product_dataset_for_selection(settings, selection, "probability", data_path)
-    with xr.open_dataset(manifest["data_path"]) as dataset:
-        data_var = dataset[list(dataset.data_vars)[0]].isel(T=0)
-        category_codes = tuple(str(item) for item in data_var.coords["probability"].values.tolist())
-        probabilities = np.asarray(data_var.values, dtype=float)
-        latitudes = np.asarray(dataset["Y"].values, dtype=float)
-        longitudes = np.asarray(dataset["X"].values, dtype=float)
-        valid_time = _to_utc_datetime(data_var.coords["T"].item())
-    probabilities = _clean_probability_grid(probabilities)
-    probabilities = _apply_selection_spatial_mask(settings, selection, latitudes, longitudes, probabilities)
+    data_path = _manifest_usable_data_path(settings, selection, "probability", manifest)
+    source_standardized_response = False
+    candidate_paths = _manifest_source_standardized_response_paths(settings, selection, "probability", manifest)
+    if candidate_paths:
+        strict_data_path = False
+        source_standardized_response = True
+    else:
+        strict_data_path = data_path is not None
+        candidate_paths = (data_path,) if data_path is not None else _manifest_standardizable_data_paths(
+            settings,
+            selection,
+            "probability",
+            manifest,
+        )
+    if not candidate_paths:
+        data_path = Path(str(manifest["data_path"]))
+        _validate_product_dataset_for_selection(settings, selection, "probability", data_path)
+        candidate_paths = (data_path,)
+
+    category_codes: tuple[str, ...] | None = None
+    probabilities: np.ndarray | None = None
+    latitudes: np.ndarray | None = None
+    longitudes: np.ndarray | None = None
+    valid_time: datetime | None = None
+    for candidate_path in candidate_paths:
+        with _open_product_dataset(candidate_path) as dataset:
+            data_var = dataset[list(dataset.data_vars)[0]].isel(T=0)
+            candidate_category_codes = tuple(str(item) for item in data_var.coords["probability"].values.tolist())
+            candidate_probabilities = np.asarray(data_var.values, dtype=float)
+            candidate_latitudes = np.asarray(dataset["Y"].values, dtype=float)
+            candidate_longitudes = np.asarray(dataset["X"].values, dtype=float)
+            candidate_valid_time = _to_utc_datetime(data_var.coords["T"].item())
+        candidate_probabilities = _clean_probability_grid(candidate_probabilities)
+        candidate_probabilities, candidate_latitudes, candidate_longitudes = _standardize_probability_grid_for_response(
+            settings,
+            selection,
+            "probability",
+            candidate_probabilities,
+            candidate_latitudes,
+            candidate_longitudes,
+            extrapolate=source_standardized_response,
+        )
+        try:
+            candidate_probabilities = _apply_selection_spatial_mask(
+                settings,
+                selection,
+                candidate_latitudes,
+                candidate_longitudes,
+                candidate_probabilities,
+            )
+        except ForecastProductArtifactsNotAvailableError:
+            if strict_data_path:
+                raise
+            continue
+        if probabilities is None:
+            category_codes = candidate_category_codes
+            probabilities = candidate_probabilities
+            latitudes = candidate_latitudes
+            longitudes = candidate_longitudes
+            valid_time = candidate_valid_time
+        elif _grid_axes_match(candidate_latitudes, candidate_longitudes, latitudes, longitudes):
+            probabilities = _merge_probability_response_grid(probabilities, candidate_probabilities)
+        if strict_data_path:
+            break
+    if probabilities is None or latitudes is None or longitudes is None or category_codes is None or valid_time is None:
+        raise ForecastProductIncompleteError(f"Probability product '{selection.theme}' does not contain any finite values.")
+    if not strict_data_path:
+        probabilities = _fill_missing_probability_response_cells(settings, selection, latitudes, longitudes, probabilities)
+        probabilities = _normalize_probability_grid(probabilities)
     preview_url = _manifest_preview_url(
         selection.theme,
         "probability",
@@ -641,15 +890,69 @@ def _prepare_deterministic_product(
         subseason=selection.subseason,
     )
     spec = _theme_spec(selection.theme)
-    data_path = Path(str(manifest["data_path"]))
-    _validate_product_dataset_for_selection(settings, selection, "deterministic", data_path)
-    with xr.open_dataset(manifest["data_path"]) as dataset:
-        data_var = dataset[list(dataset.data_vars)[0]].isel(T=0)
-        values = np.asarray(data_var.values, dtype=float)
-        latitudes = np.asarray(dataset["Y"].values, dtype=float)
-        longitudes = np.asarray(dataset["X"].values, dtype=float)
-        valid_time = _to_utc_datetime(data_var.coords["T"].item())
-    values = _apply_selection_spatial_mask(settings, selection, latitudes, longitudes, values)
+    data_path = _manifest_usable_data_path(settings, selection, "deterministic", manifest)
+    source_standardized_response = False
+    candidate_paths = _manifest_source_standardized_response_paths(settings, selection, "deterministic", manifest)
+    if candidate_paths:
+        strict_data_path = False
+        source_standardized_response = True
+    else:
+        strict_data_path = data_path is not None
+        candidate_paths = (data_path,) if data_path is not None else _manifest_standardizable_data_paths(
+            settings,
+            selection,
+            "deterministic",
+            manifest,
+        )
+    if not candidate_paths:
+        data_path = Path(str(manifest["data_path"]))
+        _validate_product_dataset_for_selection(settings, selection, "deterministic", data_path)
+        candidate_paths = (data_path,)
+    values: np.ndarray | None = None
+    latitudes: np.ndarray | None = None
+    longitudes: np.ndarray | None = None
+    valid_time: datetime | None = None
+    for candidate_path in candidate_paths:
+        with _open_product_dataset(candidate_path) as dataset:
+            data_var = dataset[list(dataset.data_vars)[0]].isel(T=0)
+            candidate_values = np.asarray(data_var.values, dtype=float)
+            candidate_latitudes = np.asarray(dataset["Y"].values, dtype=float)
+            candidate_longitudes = np.asarray(dataset["X"].values, dtype=float)
+            candidate_valid_time = _to_utc_datetime(data_var.coords["T"].item())
+        candidate_values, candidate_latitudes, candidate_longitudes = _standardize_deterministic_grid_for_response(
+            settings,
+            selection,
+            "deterministic",
+            candidate_values,
+            candidate_latitudes,
+            candidate_longitudes,
+            extrapolate=source_standardized_response,
+        )
+        try:
+            candidate_values = _apply_selection_spatial_mask(
+                settings,
+                selection,
+                candidate_latitudes,
+                candidate_longitudes,
+                candidate_values,
+            )
+        except ForecastProductArtifactsNotAvailableError:
+            if strict_data_path:
+                raise
+            continue
+        if values is None:
+            values = candidate_values
+            latitudes = candidate_latitudes
+            longitudes = candidate_longitudes
+            valid_time = candidate_valid_time
+        elif _grid_axes_match(candidate_latitudes, candidate_longitudes, latitudes, longitudes):
+            values = _merge_deterministic_response_grid(values, candidate_values)
+        if strict_data_path:
+            break
+    if values is None or latitudes is None or longitudes is None or valid_time is None:
+        raise ForecastProductIncompleteError(f"Deterministic product '{selection.theme}' does not contain any finite values.")
+    if not strict_data_path:
+        values = _fill_missing_deterministic_response_cells(settings, selection, latitudes, longitudes, values)
     finite = values[np.isfinite(values)]
     if finite.size == 0:
         raise ForecastProductIncompleteError(f"Deterministic product '{selection.theme}' does not contain any finite values.")
@@ -751,6 +1054,21 @@ def _generate_product_artifact(
     final_source = _final_product_source_for_selection(settings, selection)
     if final_source is not None:
         source_path = final_source.probability_path if view_mode == "probability" else final_source.deterministic_path
+        if not _source_file_is_usable_for_selection(settings, selection, view_mode, source_path):
+            raise ForecastProductIncompleteError(
+                f"Forecast product '{selection.theme}' is not usable for the requested selection."
+            )
+        if settings.forecast_products.require_standard_grid_coverage:
+            return _promote_source_product_to_standard_artifact(
+                settings,
+                selection,
+                view_mode,
+                source_path,
+                title=final_source.title or source.title,
+                forecast_year=final_source.forecast_year,
+                source_artifact_type="final_netcdf",
+                source_generation_backend=f"{settings.forecast_products.generation_backend}_final_netcdf",
+            )
         return _copy_product_artifact(
             settings,
             theme=selection.theme,
@@ -770,6 +1088,21 @@ def _generate_product_artifact(
     source_path = source.probability_path if view_mode == "probability" else source.deterministic_path
     if source_path is None or not source_path.exists():
         raise ForecastProductArtifactsNotAvailableError(f"Forecast source file is missing: {source_path}")
+    if not _source_file_is_usable_for_selection(settings, selection, view_mode, source_path):
+        raise ForecastProductIncompleteError(
+            f"Forecast product '{selection.theme}' is not usable for the requested selection."
+        )
+    if settings.forecast_products.require_standard_grid_coverage:
+        return _promote_source_product_to_standard_artifact(
+            settings,
+            selection,
+            view_mode,
+            source_path,
+            title=source.title,
+            forecast_year=source.forecast_year,
+            source_artifact_type="final_netcdf",
+            source_generation_backend=settings.forecast_products.generation_backend,
+        )
 
     return _copy_product_artifact(
         settings,
@@ -800,6 +1133,7 @@ def _copy_product_artifact(
 ) -> dict[str, Any]:
     if not source_path.exists():
         raise ForecastProductArtifactsNotAvailableError(f"Forecast source file is missing: {source_path}")
+    selection = _resolve_selection(settings, theme, season_profile=season_profile, subseason=subseason)
     product_dir = _product_scope_path(
         settings,
         theme,
@@ -854,11 +1188,38 @@ def _copy_product_artifact(
         "freshness_threshold_hours": settings.forecast_products.freshness_threshold_hours,
         "data_path": str(copied_path),
         "preview_path": str(preview_path),
+        "app_ready_validation": _app_ready_validation_marker(settings, selection, view_mode, copied_path),
     }
     manifest_path = product_dir / "active.json"
     manifest["manifest_path"] = str(manifest_path)
     manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
     return manifest
+
+
+def _app_ready_validation_marker(
+    settings: Settings,
+    selection: ForecastProductSelection,
+    view_mode: ViewMode,
+    data_path: Path,
+) -> dict[str, Any]:
+    stat = data_path.stat()
+    return {
+        "app_ready": True,
+        "validation_version": _PRODUCT_APP_READY_VALIDATION_VERSION,
+        "validated_at": datetime.now(UTC).isoformat(),
+        "theme": selection.theme,
+        "view_mode": view_mode,
+        "season_profile": selection.season_profile,
+        "subseason": selection.subseason,
+        "data_path": str(data_path),
+        "data_mtime_ns": int(stat.st_mtime_ns),
+        "data_size": int(stat.st_size),
+        "require_standard_grid_coverage": bool(settings.forecast_products.require_standard_grid_coverage),
+        "standard_grid_min_y": int(settings.forecast_products.standard_grid_min_y),
+        "standard_grid_min_x": int(settings.forecast_products.standard_grid_min_x),
+        "standard_grid_coverage_tolerance_degrees": float(settings.forecast_products.standard_grid_coverage_tolerance_degrees),
+        "standard_grid_resolution_degrees": float(STANDARD_PRODUCT_GRID_RESOLUTION_DEGREES),
+    }
 
 
 def _generate_daily_derived_product_artifact(
@@ -880,6 +1241,52 @@ def _generate_daily_derived_product_artifact(
 
     mode_token = "Prob" if view_mode == "probability" else "Det"
     selector_token = selection.season_profile or (selection.subseason.lower() if selection.subseason else "global")
+    if _selection_should_promote_daily_derived(settings, selection):
+        source_data_path = product_dir / f"Forecast_{mode_token}_{selection.theme}_{selector_token}_{derived.forecast_year}_coarse.nc"
+        if view_mode == "probability":
+            _write_probability_product_netcdf(
+                source_data_path,
+                probabilities=derived.probabilities,
+                latitudes=derived.latitudes,
+                longitudes=derived.longitudes,
+                valid_time=derived.valid_time,
+            )
+        else:
+            _write_deterministic_product_netcdf(
+                source_data_path,
+                values=derived.deterministic_values,
+                latitudes=derived.latitudes,
+                longitudes=derived.longitudes,
+                valid_time=derived.valid_time,
+            )
+        source_product_id = (
+            f"{selection.theme}_{view_mode}_{selector_token}_{derived.forecast_year}_daily_wass2s_source"
+        )
+        source_manifest = {
+            "product_id": source_product_id,
+            "theme": selection.theme,
+            "view_mode": view_mode,
+            "season_profile": selection.season_profile,
+            "subseason": selection.subseason,
+            "title": source.title,
+            "forecast_year": derived.forecast_year,
+            "generated_at": datetime.now(UTC).isoformat(),
+            "source_label": settings.forecast_products.source_label,
+            "source_run_id": source_product_id,
+            "generation_backend": f"{settings.forecast_products.generation_backend}_daily_wass2s",
+            "source_artifact_type": "daily_wass2s_derived",
+            "refresh_interval_seconds": settings.forecast_products.refresh_interval_seconds,
+            "freshness_threshold_hours": settings.forecast_products.freshness_threshold_hours,
+            "data_path": str(source_data_path),
+        }
+        return _promote_derived_product_manifest_to_final_artifact(
+            settings,
+            selection,
+            view_mode,
+            source_manifest,
+            title=source.title,
+        )
+
     data_path = product_dir / f"Forecast_{mode_token}_{selection.theme}_{selector_token}_{derived.forecast_year}.nc"
     if view_mode == "probability":
         _write_probability_product_netcdf(
@@ -889,6 +1296,7 @@ def _generate_daily_derived_product_artifact(
             longitudes=derived.longitudes,
             valid_time=derived.valid_time,
         )
+        _validate_product_dataset_for_selection(settings, selection, view_mode, data_path)
         preview_bytes = _build_probability_preview_png(data_path, selection.theme)
     else:
         _write_deterministic_product_netcdf(
@@ -898,6 +1306,7 @@ def _generate_daily_derived_product_artifact(
             longitudes=derived.longitudes,
             valid_time=derived.valid_time,
         )
+        _validate_product_dataset_for_selection(settings, selection, view_mode, data_path)
         preview_bytes = _build_deterministic_preview_png(data_path, selection.theme)
 
     preview_path = product_dir / "preview.png"
@@ -927,11 +1336,711 @@ def _generate_daily_derived_product_artifact(
         "freshness_threshold_hours": settings.forecast_products.freshness_threshold_hours,
         "data_path": str(data_path),
         "preview_path": str(preview_path),
+        "app_ready_validation": _app_ready_validation_marker(settings, selection, view_mode, data_path),
     }
     manifest_path = product_dir / "active.json"
     manifest["manifest_path"] = str(manifest_path)
     manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
     return manifest
+
+
+def _selection_should_promote_daily_derived(settings: Settings, selection: ForecastProductSelection) -> bool:
+    return settings.forecast_products.require_standard_grid_coverage and selection.theme in PROMOTABLE_DAILY_DERIVED_THEMES
+
+
+def _promote_source_product_to_standard_artifact(
+    settings: Settings,
+    selection: ForecastProductSelection,
+    view_mode: ViewMode,
+    source_path: Path,
+    *,
+    title: str,
+    forecast_year: int,
+    source_artifact_type: str,
+    source_generation_backend: str,
+) -> dict[str, Any]:
+    source_product_id = f"{selection.theme}_{view_mode}_{forecast_year}_source"
+    source_manifest = {
+        "product_id": source_product_id,
+        "theme": selection.theme,
+        "view_mode": view_mode,
+        "season_profile": selection.season_profile,
+        "subseason": selection.subseason,
+        "title": title,
+        "forecast_year": forecast_year,
+        "generated_at": datetime.now(UTC).isoformat(),
+        "source_label": settings.forecast_products.source_label,
+        "source_run_id": source_product_id,
+        "generation_backend": source_generation_backend,
+        "source_artifact_type": source_artifact_type,
+        "refresh_interval_seconds": settings.forecast_products.refresh_interval_seconds,
+        "freshness_threshold_hours": settings.forecast_products.freshness_threshold_hours,
+        "data_path": str(source_path),
+    }
+    return _promote_derived_product_manifest_to_final_artifact(
+        settings,
+        selection,
+        view_mode,
+        source_manifest,
+        title=title,
+    )
+
+
+def _promote_derived_product_manifest_to_final_artifact(
+    settings: Settings,
+    selection: ForecastProductSelection,
+    view_mode: ViewMode,
+    source_manifest: dict[str, Any],
+    *,
+    title: str,
+) -> dict[str, Any]:
+    source_path = Path(str(source_manifest.get("data_path") or ""))
+    if not source_path.exists():
+        raise ForecastProductArtifactsNotAvailableError(f"Forecast source file is missing: {source_path}")
+
+    source_values, source_latitudes, source_longitudes, valid_time = _load_product_grid_for_promotion(source_path, view_mode)
+    target_latitudes, target_longitudes = _standard_product_grid(settings, selection, view_mode)
+    if view_mode == "probability":
+        promoted_values = _interpolate_promote_probability_grid(
+            source_values,
+            source_latitudes,
+            source_longitudes,
+            target_latitudes,
+            target_longitudes,
+        )
+        promoted_values = _normalize_probability_grid(promoted_values)
+    else:
+        promoted_values = _interpolate_promote_grid(
+            source_values,
+            source_latitudes,
+            source_longitudes,
+            target_latitudes,
+            target_longitudes,
+        )
+    promoted_values = _apply_selection_spatial_mask(
+        settings,
+        selection,
+        target_latitudes,
+        target_longitudes,
+        promoted_values,
+    )
+    if not np.isfinite(promoted_values).any():
+        raise ForecastProductIncompleteError(f"Promoted forecast product '{selection.theme}' has no finite cells.")
+
+    product_dir = _product_scope_path(
+        settings,
+        selection.theme,
+        view_mode,
+        season_profile=selection.season_profile,
+        subseason=selection.subseason,
+    )
+    ensure_directory(product_dir)
+    forecast_year = int(source_manifest.get("forecast_year") or pd.Timestamp(valid_time).year)
+    mode_token = "Prob" if view_mode == "probability" else "Det"
+    selector_token = selection.season_profile or (selection.subseason.lower() if selection.subseason else "global")
+    data_path = product_dir / f"Forecast_{mode_token}_{selection.theme}_{selector_token}_{forecast_year}_regridded.nc"
+    if view_mode == "probability":
+        _write_probability_product_netcdf(
+            data_path,
+            probabilities=promoted_values,
+            latitudes=target_latitudes,
+            longitudes=target_longitudes,
+            valid_time=valid_time,
+        )
+        _validate_product_dataset_for_selection(settings, selection, view_mode, data_path)
+        preview_bytes = _build_probability_preview_png(data_path, selection.theme)
+    else:
+        _write_deterministic_product_netcdf(
+            data_path,
+            values=promoted_values,
+            latitudes=target_latitudes,
+            longitudes=target_longitudes,
+            valid_time=valid_time,
+        )
+        _validate_product_dataset_for_selection(settings, selection, view_mode, data_path)
+        preview_bytes = _build_deterministic_preview_png(data_path, selection.theme)
+
+    preview_path = product_dir / "preview.png"
+    preview_path.write_bytes(preview_bytes)
+
+    generated_at = datetime.now(UTC)
+    suffix = ""
+    if selection.season_profile is not None:
+        suffix = f"{suffix}_{selection.season_profile}"
+    if selection.subseason is not None:
+        suffix = f"{suffix}_{selection.subseason.lower()}"
+    product_id = f"{selection.theme}_{view_mode}{suffix}_{forecast_year}_{generated_at.strftime('%Y%m%dT%H%M%SZ')}"
+    manifest = {
+        "product_id": product_id,
+        "theme": selection.theme,
+        "view_mode": view_mode,
+        "season_profile": selection.season_profile,
+        "subseason": selection.subseason,
+        "title": title,
+        "forecast_year": forecast_year,
+        "generated_at": generated_at.isoformat(),
+        "source_label": settings.forecast_products.source_label,
+        "source_run_id": product_id,
+        "generation_backend": f"{settings.forecast_products.generation_backend}_regridded_final_netcdf",
+        "source_artifact_type": "final_netcdf",
+        "source_path": str(source_path),
+        "promotion_source_product_id": source_manifest.get("product_id"),
+        "promotion_source_generation_backend": source_manifest.get("generation_backend"),
+        "promotion_source_artifact_type": _manifest_source_artifact_type(source_manifest),
+        "promotion_method": STANDARD_PRODUCT_PROMOTION_METHOD,
+        "promotion_grid_resolution_degrees": STANDARD_PRODUCT_GRID_RESOLUTION_DEGREES,
+        "refresh_interval_seconds": settings.forecast_products.refresh_interval_seconds,
+        "freshness_threshold_hours": settings.forecast_products.freshness_threshold_hours,
+        "data_path": str(data_path),
+        "preview_path": str(preview_path),
+        "app_ready_validation": _app_ready_validation_marker(settings, selection, view_mode, data_path),
+    }
+    manifest_path = product_dir / "active.json"
+    manifest["manifest_path"] = str(manifest_path)
+    manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+    return manifest
+
+
+def _load_product_grid_for_promotion(
+    data_path: Path,
+    view_mode: ViewMode,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, datetime]:
+    with _open_product_dataset(data_path) as dataset:
+        data_var = dataset[list(dataset.data_vars)[0]]
+        _validate_product_dimensions(view_mode, data_var)
+        if "Y" not in dataset.coords or "X" not in dataset.coords:
+            raise ForecastProductIncompleteError("Forecast product is missing Y/X coordinates.")
+        latitudes = np.asarray(dataset["Y"].values, dtype=float)
+        longitudes = np.asarray(dataset["X"].values, dtype=float)
+        if latitudes.ndim != 1 or longitudes.ndim != 1 or latitudes.size == 0 or longitudes.size == 0:
+            raise ForecastProductIncompleteError("Forecast product grid coordinates must be non-empty one-dimensional arrays.")
+        valid_time = _to_utc_datetime(data_var.coords["T"].values[0])
+        if view_mode == "probability":
+            category_codes = tuple(str(item) for item in data_var.coords["probability"].values.tolist())
+            if category_codes != PROBABILITY_CODES:
+                raise ForecastProductIncompleteError("Probability product must expose PB, PN, and PA categories.")
+            values = _clean_probability_grid(np.asarray(data_var.isel(T=0).values, dtype=float))
+        else:
+            values = np.asarray(data_var.isel(T=0).values, dtype=float)
+    if not np.isfinite(values).any():
+        raise ForecastProductIncompleteError("Forecast product does not contain any finite cells to promote.")
+    return values, latitudes, longitudes, valid_time
+
+
+def _standard_product_grid(
+    settings: Settings,
+    selection: ForecastProductSelection | None = None,
+    view_mode: ViewMode | None = None,
+) -> tuple[np.ndarray, np.ndarray]:
+    if selection is not None and view_mode is not None:
+        reference_grid = _standard_product_reference_grid(settings, selection, view_mode)
+        if reference_grid is not None:
+            return reference_grid
+
+    min_lon, min_lat, max_lon, max_lat = _ghana_product_grid_bounds(settings)
+    latitudes = _standard_grid_axis(
+        min_lat,
+        max_lat,
+        min_size=max(int(settings.forecast_products.standard_grid_min_y), 1),
+    )
+    longitudes = _standard_grid_axis(
+        min_lon,
+        max_lon,
+        min_size=max(int(settings.forecast_products.standard_grid_min_x), 1),
+    )
+    return latitudes, longitudes
+
+
+def _standard_product_reference_grid(
+    settings: Settings,
+    selection: ForecastProductSelection,
+    view_mode: ViewMode,
+) -> tuple[np.ndarray, np.ndarray] | None:
+    for source in _standard_product_reference_sources(settings, selection):
+        source_paths = (
+            source.probability_path if view_mode == "probability" else source.deterministic_path,
+            source.deterministic_path,
+            source.probability_path,
+        )
+        for source_path in source_paths:
+            if not source_path.exists():
+                continue
+            try:
+                with _open_product_dataset(source_path) as dataset:
+                    reference_latitudes = np.asarray(dataset["Y"].values, dtype=float)
+                    reference_longitudes = np.asarray(dataset["X"].values, dtype=float)
+                _validate_reference_grid_axes(settings, selection, reference_latitudes, reference_longitudes)
+            except Exception:
+                continue
+            return _reference_grid_footprint_axes(settings, reference_latitudes, reference_longitudes)
+    return None
+
+
+def _reference_grid_footprint_axes(
+    settings: Settings,
+    reference_latitudes: np.ndarray,
+    reference_longitudes: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray]:
+    latitudes = _standard_grid_axis(
+        float(np.nanmin(reference_latitudes)),
+        float(np.nanmax(reference_latitudes)),
+        min_size=max(int(settings.forecast_products.standard_grid_min_y), 1),
+    )
+    longitudes = _standard_grid_axis(
+        float(np.nanmin(reference_longitudes)),
+        float(np.nanmax(reference_longitudes)),
+        min_size=max(int(settings.forecast_products.standard_grid_min_x), 1),
+    )
+    return latitudes, longitudes
+
+
+def _standard_product_reference_sources(
+    settings: Settings,
+    selection: ForecastProductSelection,
+) -> tuple[ForecastProductPairSourceConfig, ...]:
+    zone = _selection_mask_zone(settings, selection)
+    if zone == "north":
+        return tuple()
+
+    sources: list[ForecastProductPairSourceConfig] = []
+    discovered = _discover_final_product_sources(tuple(str(path) for path in settings.forecast_products.final_product_dirs))
+
+    for theme in _reference_grid_theme_candidates(selection):
+        theme_sources = _case_insensitive_lookup(settings.forecast_products.final_product_sources, theme) or {}
+        for selector in _reference_grid_selector_candidates(selection, zone):
+            source = _case_insensitive_lookup(theme_sources, selector) if isinstance(theme_sources, dict) else None
+            if source is None and theme == "rainfall_amount":
+                source = _case_insensitive_lookup(settings.forecast_products.rainfall_total_sources, selector)
+            if source is None:
+                source = discovered.get((theme, selector.lower()))
+            if source is not None and source not in sources and _final_product_pair_has_files(source):
+                sources.append(source)
+    return tuple(sources)
+
+
+def _reference_grid_theme_candidates(selection: ForecastProductSelection) -> tuple[str, ...]:
+    themes: list[str] = []
+    for theme in (selection.theme, "rainfall_amount", "onset", "early_dry_spell"):
+        if theme not in themes:
+            themes.append(theme)
+    return tuple(themes)
+
+
+def _reference_grid_selector_candidates(selection: ForecastProductSelection, zone: str) -> tuple[str, ...]:
+    selectors: list[str] = []
+
+    def add(value: str | None) -> None:
+        if value is None:
+            return
+        for candidate in (value, value.lower(), _compact_selector_token(value)):
+            if candidate and candidate not in selectors:
+                selectors.append(candidate)
+
+    add(selection.subseason)
+    add(selection.season_profile)
+    if zone == "south":
+        add("southern_major")
+    elif zone == "north":
+        add("northern_single")
+    for candidate in (DEFAULT_FINAL_PRODUCT_SELECTOR, "default", "global", "all"):
+        add(candidate)
+    return tuple(selectors)
+
+
+def _validate_reference_grid_axes(
+    settings: Settings,
+    selection: ForecastProductSelection,
+    latitudes: np.ndarray,
+    longitudes: np.ndarray,
+) -> None:
+    if latitudes.ndim != 1 or longitudes.ndim != 1 or latitudes.size == 0 or longitudes.size == 0:
+        raise ForecastProductIncompleteError("Reference forecast product grid coordinates must be non-empty one-dimensional arrays.")
+    min_y = max(int(settings.forecast_products.standard_grid_min_y), 1)
+    min_x = max(int(settings.forecast_products.standard_grid_min_x), 1)
+    if latitudes.size < min_y or longitudes.size < min_x:
+        raise ForecastProductIncompleteError("Reference forecast product grid is too coarse for standard raster output.")
+    _validate_axis_coverage(settings, selection, latitudes, longitudes, "reference-grid")
+
+
+def _ghana_product_grid_bounds(settings: Settings) -> tuple[float, float, float, float]:
+    features = _load_district_zone_features(
+        str(settings.seasonal_map.district_geojson_path),
+        float(settings.seasonal_map.northern_latitude_threshold),
+    )
+    if not features:
+        raise ForecastProductIncompleteError("No district footprint is configured for standard product promotion.")
+    return (
+        min(float(feature["bbox"][0]) for feature in features),
+        min(float(feature["bbox"][1]) for feature in features),
+        max(float(feature["bbox"][2]) for feature in features),
+        max(float(feature["bbox"][3]) for feature in features),
+    )
+
+
+def _standard_grid_axis(min_value: float, max_value: float, *, min_size: int) -> np.ndarray:
+    resolution = STANDARD_PRODUCT_GRID_RESOLUTION_DEGREES
+    padding = max(STANDARD_PRODUCT_GRID_PADDING_DEGREES, resolution)
+    start_unit = math.floor((float(min_value) - padding) / resolution)
+    stop_unit = math.ceil((float(max_value) + padding) / resolution)
+    count = stop_unit - start_unit + 1
+    if count < min_size:
+        deficit = min_size - count
+        lower_extra = deficit // 2
+        upper_extra = deficit - lower_extra
+        start_unit -= lower_extra
+        stop_unit += upper_extra
+    units = np.arange(start_unit, stop_unit + 1, dtype=float)
+    return np.round(units * resolution, 4)
+
+
+def _nearest_promote_probability_grid(
+    probabilities: np.ndarray,
+    source_latitudes: np.ndarray,
+    source_longitudes: np.ndarray,
+    target_latitudes: np.ndarray,
+    target_longitudes: np.ndarray,
+) -> np.ndarray:
+    if probabilities.ndim != 3:
+        raise ForecastProductIncompleteError("Probability promotion expects category, Y, and X dimensions.")
+    return np.stack(
+        [
+            _nearest_promote_grid(layer, source_latitudes, source_longitudes, target_latitudes, target_longitudes)
+            for layer in probabilities
+        ],
+        axis=0,
+    )
+
+
+def _nearest_promote_grid(
+    values: np.ndarray,
+    source_latitudes: np.ndarray,
+    source_longitudes: np.ndarray,
+    target_latitudes: np.ndarray,
+    target_longitudes: np.ndarray,
+) -> np.ndarray:
+    if values.ndim != 2:
+        raise ForecastProductIncompleteError("Deterministic promotion expects a two-dimensional forecast grid.")
+    lat_indices = _nearest_promote_indices(source_latitudes, target_latitudes)
+    lon_indices = _nearest_promote_indices(source_longitudes, target_longitudes)
+    return np.asarray(values, dtype=float)[np.ix_(lat_indices, lon_indices)]
+
+
+def _interpolate_promote_probability_grid(
+    probabilities: np.ndarray,
+    source_latitudes: np.ndarray,
+    source_longitudes: np.ndarray,
+    target_latitudes: np.ndarray,
+    target_longitudes: np.ndarray,
+) -> np.ndarray:
+    if probabilities.ndim != 3:
+        raise ForecastProductIncompleteError("Probability promotion expects category, Y, and X dimensions.")
+    sampled, lat_inside, lon_inside = _bilinear_sample_probability_grid(
+        probabilities,
+        source_latitudes,
+        source_longitudes,
+        target_latitudes,
+        target_longitudes,
+    )
+    inside = lat_inside[:, None] & lon_inside[None, :]
+    nearest = _nearest_promote_probability_grid(
+        probabilities,
+        source_latitudes,
+        source_longitudes,
+        target_latitudes,
+        target_longitudes,
+    )
+    return np.where(inside[None, :, :], sampled, nearest)
+
+
+def _interpolate_promote_grid(
+    values: np.ndarray,
+    source_latitudes: np.ndarray,
+    source_longitudes: np.ndarray,
+    target_latitudes: np.ndarray,
+    target_longitudes: np.ndarray,
+) -> np.ndarray:
+    if values.ndim != 2:
+        raise ForecastProductIncompleteError("Deterministic promotion expects a two-dimensional forecast grid.")
+    sampled, lat_inside, lon_inside = _bilinear_sample_grid(
+        values,
+        source_latitudes,
+        source_longitudes,
+        target_latitudes,
+        target_longitudes,
+    )
+    inside = lat_inside[:, None] & lon_inside[None, :]
+    nearest = _nearest_promote_grid(values, source_latitudes, source_longitudes, target_latitudes, target_longitudes)
+    return np.where(inside, sampled, nearest)
+
+
+def _extrapolate_promote_probability_grid(
+    probabilities: np.ndarray,
+    source_latitudes: np.ndarray,
+    source_longitudes: np.ndarray,
+    target_latitudes: np.ndarray,
+    target_longitudes: np.ndarray,
+) -> np.ndarray:
+    if probabilities.ndim != 3:
+        raise ForecastProductIncompleteError("Probability promotion expects category, Y, and X dimensions.")
+    sampled_layers = [
+        _extrapolate_promote_grid(layer, source_latitudes, source_longitudes, target_latitudes, target_longitudes)
+        for layer in probabilities
+    ]
+    return _normalize_probability_grid(np.stack(sampled_layers, axis=0))
+
+
+def _extrapolate_promote_grid(
+    values: np.ndarray,
+    source_latitudes: np.ndarray,
+    source_longitudes: np.ndarray,
+    target_latitudes: np.ndarray,
+    target_longitudes: np.ndarray,
+) -> np.ndarray:
+    if values.ndim != 2:
+        raise ForecastProductIncompleteError("Deterministic promotion expects a two-dimensional forecast grid.")
+    return _linear_sample_grid_with_extrapolation(
+        values,
+        source_latitudes,
+        source_longitudes,
+        target_latitudes,
+        target_longitudes,
+    )
+
+
+def _linear_sample_grid_with_extrapolation(
+    values: np.ndarray,
+    latitudes: np.ndarray,
+    longitudes: np.ndarray,
+    sample_latitudes: np.ndarray,
+    sample_longitudes: np.ndarray,
+) -> np.ndarray:
+    lat_lower, lat_upper, lat_weight = _axis_linear_extrapolation_bounds(latitudes, sample_latitudes)
+    lon_lower, lon_upper, lon_weight = _axis_linear_extrapolation_bounds(longitudes, sample_longitudes)
+
+    v00 = values[np.ix_(lat_lower, lon_lower)]
+    v01 = values[np.ix_(lat_lower, lon_upper)]
+    v10 = values[np.ix_(lat_upper, lon_lower)]
+    v11 = values[np.ix_(lat_upper, lon_upper)]
+    wy = lat_weight[:, None]
+    wx = lon_weight[None, :]
+    return _weighted_bilinear_average(
+        (v00, (1.0 - wy) * (1.0 - wx)),
+        (v01, (1.0 - wy) * wx),
+        (v10, wy * (1.0 - wx)),
+        (v11, wy * wx),
+    )
+
+
+def _axis_linear_extrapolation_bounds(
+    axis_values: np.ndarray,
+    sample_values: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    axis = np.asarray(axis_values, dtype=float)
+    finite_axis_indices = np.flatnonzero(np.isfinite(axis))
+    if finite_axis_indices.size == 0:
+        raise ForecastProductIncompleteError("Forecast product grid coordinates are empty.")
+    ordered_indices = finite_axis_indices[np.argsort(axis[finite_axis_indices])]
+    ordered_values = axis[ordered_indices]
+    samples = np.asarray(sample_values, dtype=float)
+
+    if ordered_values.size == 1:
+        only = np.full(samples.shape, int(ordered_indices[0]), dtype=int)
+        return only, only, np.zeros(samples.shape, dtype=float)
+
+    upper_positions = np.searchsorted(ordered_values, samples, side="left")
+    upper_positions = np.clip(upper_positions, 1, ordered_values.size - 1)
+    lower_positions = upper_positions - 1
+    lower_values = ordered_values[lower_positions]
+    upper_values = ordered_values[upper_positions]
+    denominator = upper_values - lower_values
+    weight = np.divide(
+        samples - lower_values,
+        denominator,
+        out=np.zeros(samples.shape, dtype=float),
+        where=denominator != 0.0,
+    )
+    return ordered_indices[lower_positions].astype(int), ordered_indices[upper_positions].astype(int), weight
+
+
+def _standardize_probability_grid_for_response(
+    settings: Settings,
+    selection: ForecastProductSelection,
+    view_mode: ViewMode,
+    probabilities: np.ndarray,
+    latitudes: np.ndarray,
+    longitudes: np.ndarray,
+    *,
+    extrapolate: bool = False,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    if not settings.forecast_products.require_standard_grid_coverage:
+        return probabilities, latitudes, longitudes
+    target_latitudes, target_longitudes = _standard_product_grid(settings, selection, view_mode)
+    if not extrapolate and _grid_axes_match(latitudes, longitudes, target_latitudes, target_longitudes):
+        return probabilities, latitudes, longitudes
+    promote = _extrapolate_promote_probability_grid if extrapolate else _interpolate_promote_probability_grid
+    standardized = promote(
+        probabilities,
+        latitudes,
+        longitudes,
+        target_latitudes,
+        target_longitudes,
+    )
+    return _normalize_probability_grid(standardized), target_latitudes, target_longitudes
+
+
+def _standardize_deterministic_grid_for_response(
+    settings: Settings,
+    selection: ForecastProductSelection,
+    view_mode: ViewMode,
+    values: np.ndarray,
+    latitudes: np.ndarray,
+    longitudes: np.ndarray,
+    *,
+    extrapolate: bool = False,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    if not settings.forecast_products.require_standard_grid_coverage:
+        return values, latitudes, longitudes
+    target_latitudes, target_longitudes = _standard_product_grid(settings, selection, view_mode)
+    if not extrapolate and _grid_axes_match(latitudes, longitudes, target_latitudes, target_longitudes):
+        return values, latitudes, longitudes
+    promote = _extrapolate_promote_grid if extrapolate else _interpolate_promote_grid
+    promoted = promote(values, latitudes, longitudes, target_latitudes, target_longitudes)
+    if extrapolate:
+        promoted = _clip_extrapolated_deterministic_grid(selection.theme, values, promoted)
+    return (
+        promoted,
+        target_latitudes,
+        target_longitudes,
+    )
+
+
+def _clip_extrapolated_deterministic_grid(theme: str, source_values: np.ndarray, promoted_values: np.ndarray) -> np.ndarray:
+    finite = np.asarray(source_values, dtype=float)[np.isfinite(source_values)]
+    if finite.size == 0:
+        return promoted_values
+    upper = float(np.nanmax(finite))
+    if theme in {"onset", "cessation"}:
+        lower = float(np.nanmin(finite))
+    else:
+        lower = 0.0
+    return np.clip(promoted_values, lower, upper)
+
+
+def _grid_axes_match(
+    latitudes: np.ndarray,
+    longitudes: np.ndarray,
+    target_latitudes: np.ndarray,
+    target_longitudes: np.ndarray,
+) -> bool:
+    return (
+        latitudes.shape == target_latitudes.shape
+        and longitudes.shape == target_longitudes.shape
+        and np.allclose(latitudes, target_latitudes)
+        and np.allclose(longitudes, target_longitudes)
+    )
+
+
+def _merge_deterministic_response_grid(existing: np.ndarray, candidate: np.ndarray) -> np.ndarray:
+    merged = np.array(existing, copy=True)
+    missing = ~np.isfinite(merged) & np.isfinite(candidate)
+    merged[missing] = candidate[missing]
+    return merged
+
+
+def _merge_probability_response_grid(existing: np.ndarray, candidate: np.ndarray) -> np.ndarray:
+    merged = np.array(existing, copy=True)
+    existing_valid = np.isfinite(merged).any(axis=0)
+    candidate_valid = np.isfinite(candidate).any(axis=0)
+    missing = ~existing_valid & candidate_valid
+    if np.any(missing):
+        merged[:, missing] = candidate[:, missing]
+    return merged
+
+
+def _fill_missing_deterministic_response_cells(
+    settings: Settings,
+    selection: ForecastProductSelection,
+    latitudes: np.ndarray,
+    longitudes: np.ndarray,
+    values: np.ndarray,
+) -> np.ndarray:
+    footprint = _district_zone_cell_mask(settings, _selection_mask_zone(settings, selection), latitudes, longitudes)
+    valid = footprint & np.isfinite(values)
+    missing = footprint & ~np.isfinite(values)
+    if not np.any(valid) or not np.any(missing):
+        return values
+    filled = np.array(values, copy=True)
+    for row, column, source_row, source_column in _nearest_valid_cell_pairs(valid, missing, latitudes, longitudes):
+        filled[row, column] = filled[source_row, source_column]
+    return filled
+
+
+def _fill_missing_probability_response_cells(
+    settings: Settings,
+    selection: ForecastProductSelection,
+    latitudes: np.ndarray,
+    longitudes: np.ndarray,
+    probabilities: np.ndarray,
+) -> np.ndarray:
+    footprint = _district_zone_cell_mask(settings, _selection_mask_zone(settings, selection), latitudes, longitudes)
+    totals = np.nansum(np.where(np.isfinite(probabilities), probabilities, 0.0), axis=0)
+    valid = footprint & np.isfinite(probabilities).any(axis=0) & (totals > 0.0)
+    missing = footprint & ~valid
+    if not np.any(valid) or not np.any(missing):
+        return probabilities
+    filled = np.array(probabilities, copy=True)
+    for row, column, source_row, source_column in _nearest_valid_cell_pairs(valid, missing, latitudes, longitudes):
+        filled[:, row, column] = filled[:, source_row, source_column]
+    return filled
+
+
+def _nearest_valid_cell_pairs(
+    valid_mask: np.ndarray,
+    missing_mask: np.ndarray,
+    latitudes: np.ndarray,
+    longitudes: np.ndarray,
+) -> tuple[tuple[int, int, int, int], ...]:
+    valid_indices = np.argwhere(valid_mask)
+    missing_indices = np.argwhere(missing_mask)
+    if valid_indices.size == 0 or missing_indices.size == 0:
+        return ()
+    valid_latitudes = latitudes[valid_indices[:, 0]]
+    valid_longitudes = longitudes[valid_indices[:, 1]]
+    pairs: list[tuple[int, int, int, int]] = []
+    for row, column in missing_indices:
+        distances = (valid_latitudes - latitudes[row]) ** 2 + (valid_longitudes - longitudes[column]) ** 2
+        source_row, source_column = valid_indices[int(np.argmin(distances))]
+        pairs.append((int(row), int(column), int(source_row), int(source_column)))
+    return tuple(pairs)
+
+
+def _nearest_promote_indices(axis_values: np.ndarray, sample_values: np.ndarray) -> np.ndarray:
+    axis = np.asarray(axis_values, dtype=float)
+    finite_axis_indices = np.flatnonzero(np.isfinite(axis))
+    if finite_axis_indices.size == 0:
+        raise ForecastProductIncompleteError("Forecast product grid coordinates are empty.")
+    ordered_indices = finite_axis_indices[np.argsort(axis[finite_axis_indices])]
+    ordered_values = axis[ordered_indices]
+    samples = np.asarray(sample_values, dtype=float)
+    if ordered_values.size == 1:
+        return np.full(samples.shape, int(ordered_indices[0]), dtype=int)
+    upper_positions = np.searchsorted(ordered_values, samples, side="left")
+    upper_positions = np.clip(upper_positions, 0, ordered_values.size - 1)
+    lower_positions = np.clip(upper_positions - 1, 0, ordered_values.size - 1)
+    choose_lower = np.abs(samples - ordered_values[lower_positions]) <= np.abs(samples - ordered_values[upper_positions])
+    nearest_positions = np.where(choose_lower, lower_positions, upper_positions)
+    return ordered_indices[nearest_positions].astype(int)
+
+
+def _normalize_probability_grid(probabilities: np.ndarray) -> np.ndarray:
+    clipped = np.where(np.isfinite(probabilities), np.clip(probabilities, 0.0, None), 0.0)
+    totals = np.sum(clipped, axis=0)
+    return np.divide(
+        clipped,
+        totals[None, :, :],
+        out=np.full_like(clipped, np.nan, dtype=float),
+        where=totals[None, :, :] > 0.0,
+    )
 
 
 def _write_probability_product_netcdf(
@@ -959,7 +2068,8 @@ def _write_probability_product_netcdf(
     temp_path = data_path.with_suffix(f"{data_path.suffix}.tmp")
     if temp_path.exists():
         temp_path.unlink()
-    dataset.to_netcdf(temp_path)
+    with _NETCDF_IO_LOCK:
+        dataset.to_netcdf(temp_path, engine="scipy")
     dataset.close()
     temp_path.replace(data_path)
 
@@ -988,12 +2098,28 @@ def _write_deterministic_product_netcdf(
     temp_path = data_path.with_suffix(f"{data_path.suffix}.tmp")
     if temp_path.exists():
         temp_path.unlink()
-    dataset.to_netcdf(temp_path)
+    with _NETCDF_IO_LOCK:
+        dataset.to_netcdf(temp_path, engine="scipy")
     dataset.close()
     temp_path.replace(data_path)
 
 
 def _final_product_source_for_selection(
+    settings: Settings,
+    selection: ForecastProductSelection,
+) -> ForecastProductPairSourceConfig | None:
+    if _selection_requires_profile_derived_onset(selection):
+        return None
+    configured = _configured_final_product_source_for_selection(settings, selection)
+    if configured is not None and _final_product_pair_is_usable(settings, selection, configured):
+        return configured
+    discovered = _discovered_final_product_source_for_selection(settings, selection)
+    if discovered is not None and _final_product_pair_is_usable(settings, selection, discovered):
+        return discovered
+    return None
+
+
+def _available_final_product_source_for_selection(
     settings: Settings,
     selection: ForecastProductSelection,
 ) -> ForecastProductPairSourceConfig | None:
@@ -1006,6 +2132,18 @@ def _final_product_source_for_selection(
     if discovered is not None and _final_product_pair_has_files(discovered):
         return discovered
     return None
+
+
+def _unusable_final_product_source_for_selection(
+    settings: Settings,
+    selection: ForecastProductSelection,
+) -> ForecastProductPairSourceConfig | None:
+    source = _available_final_product_source_for_selection(settings, selection)
+    if source is None:
+        return None
+    if _final_product_pair_is_usable(settings, selection, source):
+        return None
+    return source
 
 
 def _configured_final_product_source_for_selection(
@@ -1021,10 +2159,6 @@ def _configured_final_product_source_for_selection(
     if selection.theme == "rainfall_amount" and selection.subseason is not None:
         return _source_for_selector(settings.forecast_products.rainfall_total_sources, selection)
     return None
-
-
-def _final_product_source_is_configured_for_selection(settings: Settings, selection: ForecastProductSelection) -> bool:
-    return _configured_final_product_source_for_selection(settings, selection) is not None
 
 
 def _source_for_selector(
@@ -1045,6 +2179,7 @@ def _final_product_selector_candidates(selection: ForecastProductSelection) -> t
         return (
             selection.season_profile,
             selection.season_profile.upper(),
+            _compact_selector_token(selection.season_profile),
             DEFAULT_FINAL_PRODUCT_SELECTOR,
             "default",
             "global",
@@ -1083,6 +2218,7 @@ def _discovered_final_product_source_for_selection(
     return None
 
 
+@lru_cache(maxsize=16)
 def _discover_final_product_sources(source_dirs: tuple[str, ...]) -> dict[tuple[str, str], ForecastProductPairSourceConfig]:
     pairs: dict[tuple[str, str, int], dict[str, Path]] = {}
     for source_dir in source_dirs:
@@ -1135,12 +2271,42 @@ def _final_product_token_metadata(token: str) -> tuple[str, str] | None:
             return "rainy_days", subseason
         return "rainfall_amount", subseason
 
-    theme = FINAL_THEME_TOKEN_MAP.get(normalized)
-    if theme is None and normalized.startswith("prcp"):
-        theme = FINAL_THEME_TOKEN_MAP.get(normalized[4:])
+    theme, remaining = _theme_and_selector_remainder_from_final_token(normalized)
     if theme is None:
         return None
-    return theme, DEFAULT_FINAL_PRODUCT_SELECTOR
+    selector = _season_selector_from_final_token(remaining) or DEFAULT_FINAL_PRODUCT_SELECTOR
+    return theme, selector
+
+
+def _theme_and_selector_remainder_from_final_token(token: str) -> tuple[str | None, str]:
+    matches: list[tuple[int, str, str]] = []
+    for theme_token, theme in FINAL_THEME_TOKEN_MAP.items():
+        if token == theme_token:
+            matches.append((len(theme_token), theme, ""))
+        elif token.startswith(theme_token):
+            matches.append((len(theme_token), theme, token[len(theme_token) :]))
+    if token.startswith("prcp"):
+        stripped = token[4:]
+        for theme_token, theme in FINAL_THEME_TOKEN_MAP.items():
+            if stripped == theme_token:
+                matches.append((len(theme_token) + 4, theme, ""))
+            elif stripped.startswith(theme_token):
+                matches.append((len(theme_token) + 4, theme, stripped[len(theme_token) :]))
+    if not matches:
+        return None, ""
+    _match_length, theme, remaining = max(matches, key=lambda item: item[0])
+    return theme, remaining
+
+
+def _season_selector_from_final_token(token: str) -> str | None:
+    normalized = re.sub(r"[^a-z0-9]+", "", token.strip().lower())
+    if not normalized:
+        return None
+    return FINAL_SEASON_SELECTOR_TOKEN_MAP.get(normalized)
+
+
+def _compact_selector_token(selector: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "", str(selector).strip().lower())
 
 
 def _subseason_from_final_token(normalized_token: str) -> str | None:
@@ -1160,9 +2326,7 @@ def _selection_can_derive_from_daily(settings: Settings, selection: ForecastProd
     if selection.theme in FINAL_PRODUCT_ONLY_THEMES:
         return False
     if not _selection_requires_profile_derived_onset(selection):
-        if _final_product_source_is_configured_for_selection(settings, selection):
-            return False
-        if _discovered_final_product_source_for_selection(settings, selection) is not None:
+        if _final_product_source_for_selection(settings, selection) is not None:
             return False
     if selection.theme in SEASON_BASED_THEMES and selection.season_profile is None:
         return False
@@ -1188,8 +2352,6 @@ def _daily_derivation_forecast_year(
     selection: ForecastProductSelection,
     fallback_year: int,
 ) -> int:
-    if not _selection_requires_profile_derived_onset(selection):
-        return int(fallback_year)
     inferred_year = _infer_daily_forecast_year(settings)
     return inferred_year if inferred_year is not None else int(fallback_year)
 
@@ -1197,7 +2359,7 @@ def _daily_derivation_forecast_year(
 def _infer_daily_forecast_year(settings: Settings) -> int | None:
     for path in _daily_forecast_paths(settings):
         try:
-            with xr.open_dataset(path) as dataset:
+            with _open_product_dataset(path) as dataset:
                 field = _normalize_daily_rainfall_field(_resolve_daily_rainfall_data_array(dataset))
                 times = pd.DatetimeIndex(field["T"].values)
         except Exception:
@@ -1221,7 +2383,7 @@ def _daily_source_has_required_dates(
     usable_members = 0
     for path in paths:
         try:
-            with xr.open_dataset(path) as dataset:
+            with _open_product_dataset(path) as dataset:
                 field = _normalize_daily_rainfall_field(_resolve_daily_rainfall_data_array(dataset))
                 available = pd.DatetimeIndex(field["T"].values).normalize()
         except Exception:
@@ -1292,7 +2454,7 @@ def _load_daily_member_stack(
     latitudes: np.ndarray | None = None
     longitudes: np.ndarray | None = None
     for path in paths:
-        with xr.open_dataset(path) as dataset:
+        with _open_product_dataset(path) as dataset:
             field = _normalize_daily_rainfall_field(_resolve_daily_rainfall_data_array(dataset))
             available = pd.DatetimeIndex(field["T"].values).normalize()
             coverage = float(np.isin(expected_dates.normalize().values, available.values).sum()) / float(len(expected_dates))
@@ -1403,6 +2565,18 @@ def _derive_season_member_metrics(
                 onset_index = _detect_onset_index(filled, times, profile, settings)
                 if theme == "onset":
                     metrics[member_index, y_index, x_index] = float(pd.Timestamp(times[onset_index]).dayofyear)
+                elif theme == "early_dry_spell":
+                    start_index = onset_index
+                    stop_index = min(days, onset_index + 50)
+                    if start_index >= stop_index:
+                        metrics[member_index, y_index, x_index] = 0.0
+                    else:
+                        metrics[member_index, y_index, x_index] = float(
+                            _longest_dry_spell_from_values(
+                                filled[start_index:stop_index],
+                                float(settings.seasonal_map.dry_day_threshold_mm),
+                            )
+                        )
                 elif theme == "cessation":
                     cessation_index = _detect_cessation_index(filled, times, onset_index, profile)
                     metrics[member_index, y_index, x_index] = float(pd.Timestamp(times[cessation_index]).dayofyear)
@@ -1502,6 +2676,10 @@ def _build_season_member_outputs(
         reference = float(_day_of_year(forecast_year, profile.cessation_reference_month, profile.cessation_reference_day))
         band = max(float(profile.cessation_normal_band_days), 1.0)
         probabilities = _probabilities_from_member_thresholds(metrics, reference - band, reference + band, settings)
+    elif theme == "early_dry_spell":
+        lower = float(profile.early_dry_spell_moderate_days)
+        upper = float(profile.early_dry_spell_high_days)
+        probabilities = _probabilities_from_member_thresholds(metrics, lower, upper, settings)
     elif theme == "late_dry_spell":
         lower = float(profile.late_dry_spell_moderate_days)
         upper = float(profile.late_dry_spell_high_days)
@@ -1565,7 +2743,10 @@ def _probabilities_from_member_thresholds(
 def _subseason_has_profile_normals(settings: Settings, selection: ForecastProductSelection) -> bool:
     if selection.subseason is None:
         return False
-    return any(_profile_subseason_normal(profile, selection.theme, selection.subseason) is not None for profile in settings.seasonal_map.profiles.values())
+    return any(
+        _profile_subseason_normal_for_grid(profile, selection.theme, selection.subseason) is not None
+        for profile in settings.seasonal_map.profiles.values()
+    )
 
 
 def _subseason_normal_grid(
@@ -1578,7 +2759,7 @@ def _subseason_normal_grid(
     if selection.subseason is None:
         return grid
     for profile in settings.seasonal_map.profiles.values():
-        normal = _profile_subseason_normal(profile, selection.theme, selection.subseason)
+        normal = _profile_subseason_normal_for_grid(profile, selection.theme, selection.subseason)
         if normal is None:
             continue
         mask = _district_zone_cell_mask(settings, profile.native_zone, latitudes, longitudes)
@@ -1597,12 +2778,21 @@ def _subseason_band_grid(
     if selection.subseason is None:
         return grid
     for profile in settings.seasonal_map.profiles.values():
-        if _profile_subseason_normal(profile, selection.theme, selection.subseason) is None:
+        if _profile_subseason_normal_for_grid(profile, selection.theme, selection.subseason) is None:
             continue
         band = float(profile.rainfall_band_pct if band_kind == "rainfall" else profile.rainy_days_band)
         mask = _district_zone_cell_mask(settings, profile.native_zone, latitudes, longitudes)
         grid = np.where(mask & ~np.isfinite(grid), band, grid)
     return grid
+
+
+def _profile_subseason_normal_for_grid(profile: SeasonalProfileConfig, theme: str, subseason: str) -> float | None:
+    normal = _profile_subseason_normal(profile, theme, subseason)
+    if normal is not None:
+        return normal
+    if theme == "rainy_days":
+        return float(profile.rainy_days_normal)
+    return None
 
 
 def _profile_subseason_normal(profile: SeasonalProfileConfig, theme: str, subseason: str) -> float | None:
@@ -1651,44 +2841,17 @@ def _ensure_active_manifest(
     )
     source = _source_for_theme(settings, normalized_theme)
     final_source = _final_product_source_for_selection(settings, selection)
+    manifest: dict[str, Any]
     if materialize_missing and final_source is not None:
-        return _generate_product_artifact(
+        manifest = _generate_product_artifact(
             settings,
             source,
             view_mode,
             season_profile=selection.season_profile,
             subseason=selection.subseason,
         )
-    if not manifest_path.exists():
+    elif not manifest_path.exists():
         if final_source is not None:
-            return _generate_product_artifact(
-                settings,
-                source,
-                view_mode,
-                season_profile=selection.season_profile,
-                subseason=selection.subseason,
-            )
-        if not materialize_missing:
-            raise ForecastProductArtifactsNotAvailableError(
-                _artifacts_not_available_message(
-                    normalized_theme,
-                    view_mode,
-                    season_profile=selection.season_profile,
-                    subseason=selection.subseason,
-                )
-            )
-        legacy_path = _legacy_manifest_path(settings, normalized_theme, view_mode)
-        if legacy_path.exists():
-            legacy_manifest = json.loads(legacy_path.read_text(encoding="utf-8"))
-            manifest = _promote_manifest_to_selection(
-                settings,
-                legacy_manifest,
-                normalized_theme,
-                view_mode,
-                season_profile=selection.season_profile,
-                subseason=selection.subseason,
-            )
-        elif _selection_view_is_materializable(settings, selection, view_mode):
             manifest = _generate_product_artifact(
                 settings,
                 source,
@@ -1697,19 +2860,73 @@ def _ensure_active_manifest(
                 subseason=selection.subseason,
             )
         else:
-            raise ForecastProductArtifactsNotAvailableError(
-                _artifacts_not_available_message(
+            if not materialize_missing:
+                if _unusable_final_product_source_for_selection(settings, selection) is not None:
+                    raise ForecastProductIncompleteError(
+                        f"Forecast product '{selection.theme}' is not usable for the requested selection."
+                    )
+                raise ForecastProductArtifactsNotAvailableError(
+                    _artifacts_not_available_message(
+                        normalized_theme,
+                        view_mode,
+                        season_profile=selection.season_profile,
+                        subseason=selection.subseason,
+                    )
+                )
+            legacy_path = _legacy_manifest_path(settings, normalized_theme, view_mode)
+            if legacy_path.exists():
+                legacy_manifest = json.loads(legacy_path.read_text(encoding="utf-8"))
+                manifest = _promote_manifest_to_selection(
+                    settings,
+                    legacy_manifest,
                     normalized_theme,
                     view_mode,
                     season_profile=selection.season_profile,
                     subseason=selection.subseason,
                 )
-            )
+            elif _selection_view_is_materializable(settings, selection, view_mode):
+                manifest = _generate_product_artifact(
+                    settings,
+                    source,
+                    view_mode,
+                    season_profile=selection.season_profile,
+                    subseason=selection.subseason,
+                )
+            else:
+                raise ForecastProductArtifactsNotAvailableError(
+                    _artifacts_not_available_message(
+                        normalized_theme,
+                        view_mode,
+                        season_profile=selection.season_profile,
+                        subseason=selection.subseason,
+                    )
+                )
     else:
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     manifest = _normalize_manifest_selection(manifest, selection, manifest_path)
+    if materialize_missing and not _manifest_grid_matches_current_target(settings, selection, view_mode, manifest):
+        source_path = _source_path_for_view(source, view_mode)
+        source_is_usable = (
+            source_path is not None and source_path.exists() and _source_file_is_usable_for_selection(settings, selection, view_mode, source_path)
+        )
+        if final_source is not None or _selection_can_derive_from_daily(settings, selection) or source_is_usable:
+            manifest = _generate_product_artifact(
+                settings,
+                source,
+                view_mode,
+                season_profile=selection.season_profile,
+                subseason=selection.subseason,
+            )
+        elif _manifest_payload_is_available_for_selection(settings, selection, manifest):
+            manifest = _promote_derived_product_manifest_to_final_artifact(
+                settings,
+                selection,
+                view_mode,
+                manifest,
+                title=str(manifest.get("title") or source.title),
+            )
     if final_source is not None and not _manifest_payload_is_available_for_selection(settings, selection, manifest):
-        return _generate_product_artifact(
+        manifest = _generate_product_artifact(
             settings,
             source,
             view_mode,
@@ -1743,6 +2960,34 @@ def _ensure_active_manifest(
                     subseason=selection.subseason,
                 )
             )
+    if (
+        materialize_missing
+        and not _manifest_payload_is_usable_for_selection(settings, selection, view_mode, manifest)
+        and _manifest_is_promotable_daily_derived(settings, selection, manifest)
+    ):
+        manifest = _promote_derived_product_manifest_to_final_artifact(
+            settings,
+            selection,
+            view_mode,
+            manifest,
+            title=source.title,
+        )
+    if (
+        materialize_missing
+        and not _manifest_payload_is_usable_for_selection(settings, selection, view_mode, manifest)
+        and _selection_view_is_materializable(settings, selection, view_mode)
+    ):
+        manifest = _generate_product_artifact(
+            settings,
+            source,
+            view_mode,
+            season_profile=selection.season_profile,
+            subseason=selection.subseason,
+        )
+    if not _manifest_payload_is_usable_for_selection(settings, selection, view_mode, manifest):
+        raise ForecastProductIncompleteError(
+            f"Forecast product '{selection.theme}' is not usable for the requested selection."
+        )
     return manifest
 
 
@@ -1802,10 +3047,253 @@ def _selection_has_complete_published_manifests(settings: Settings, selection: F
 
 
 def _selection_has_complete_ready_product(settings: Settings, selection: ForecastProductSelection) -> bool:
-    if _selection_has_complete_published_manifests(settings, selection):
-        return True
+    manifest_pair = _selection_options_manifest_pair(settings, selection)
+    if manifest_pair is not None:
+        probability_manifest, deterministic_manifest = manifest_pair
+        if probability_manifest.trusted and deterministic_manifest.trusted:
+            return True
+        return _selection_manifest_pair_is_usable_for_options(
+            settings,
+            selection,
+            probability_manifest.path,
+            deterministic_manifest.path,
+        )
     final_source = _final_product_source_for_selection(settings, selection)
-    return final_source is not None and _final_product_pair_has_files(final_source)
+    return final_source is not None and _final_product_pair_is_usable(settings, selection, final_source)
+
+
+def _selection_options_manifest_pair(
+    settings: Settings,
+    selection: ForecastProductSelection,
+) -> tuple[ProductOptionsManifestCandidate, ProductOptionsManifestCandidate] | None:
+    probability_manifest = _options_manifest_candidate(settings, selection, "probability")
+    deterministic_manifest = _options_manifest_candidate(settings, selection, "deterministic")
+    if probability_manifest is None or deterministic_manifest is None:
+        return None
+    return probability_manifest, deterministic_manifest
+
+
+def _options_manifest_candidate(
+    settings: Settings,
+    selection: ForecastProductSelection,
+    view_mode: ViewMode,
+) -> ProductOptionsManifestCandidate | None:
+    canonical = _canonical_manifest_path(
+        settings,
+        selection.theme,
+        view_mode,
+        season_profile=selection.season_profile,
+        subseason=selection.subseason,
+    )
+    candidate = _options_manifest_candidate_from_path(
+        settings,
+        selection,
+        view_mode,
+        canonical,
+        allow_path_selector=True,
+    )
+    if candidate is not None:
+        return candidate
+
+    legacy = _legacy_manifest_path(settings, selection.theme, view_mode)
+    return _options_manifest_candidate_from_path(
+        settings,
+        selection,
+        view_mode,
+        legacy,
+        allow_path_selector=False,
+    )
+
+
+def _options_manifest_candidate_from_path(
+    settings: Settings,
+    selection: ForecastProductSelection,
+    view_mode: ViewMode,
+    manifest_path: Path,
+    *,
+    allow_path_selector: bool,
+) -> ProductOptionsManifestCandidate | None:
+    if not manifest_path.exists():
+        return None
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    if allow_path_selector:
+        manifest = _normalize_manifest_selection(manifest, selection, manifest_path)
+    elif not _manifest_matches_options_selection(selection, view_mode, manifest, allow_missing_selector=False):
+        return None
+    else:
+        manifest = dict(manifest)
+        manifest["manifest_path"] = str(manifest_path)
+
+    if not _manifest_matches_options_selection(selection, view_mode, manifest, allow_missing_selector=allow_path_selector):
+        return None
+    if not _manifest_payload_is_available_for_selection(settings, selection, manifest):
+        return None
+
+    trusted = _manifest_has_trusted_app_ready_marker(settings, selection, view_mode, manifest)
+    return ProductOptionsManifestCandidate(path=manifest_path, manifest=manifest, trusted=trusted)
+
+
+def _manifest_matches_options_selection(
+    selection: ForecastProductSelection,
+    view_mode: ViewMode,
+    manifest: dict[str, Any],
+    *,
+    allow_missing_selector: bool,
+) -> bool:
+    manifest_theme = manifest.get("theme")
+    if manifest_theme is not None:
+        try:
+            if _normalize_theme(str(manifest_theme)) != selection.theme:
+                return False
+        except Exception:
+            return False
+
+    manifest_view_mode = manifest.get("view_mode")
+    if manifest_view_mode is not None and str(manifest_view_mode).strip().lower() != view_mode:
+        return False
+
+    manifest_season = manifest.get("season_profile")
+    if manifest_season is None and not allow_missing_selector and selection.season_profile is not None:
+        return False
+    if manifest_season is not None and str(manifest_season).strip().lower() != str(selection.season_profile or "").lower():
+        return False
+
+    manifest_subseason = manifest.get("subseason")
+    if manifest_subseason is None and not allow_missing_selector and selection.subseason is not None:
+        return False
+    if manifest_subseason is not None and str(manifest_subseason).strip().upper() != str(selection.subseason or "").upper():
+        return False
+
+    return True
+
+
+def _manifest_has_trusted_app_ready_marker(
+    settings: Settings,
+    selection: ForecastProductSelection,
+    view_mode: ViewMode,
+    manifest: dict[str, Any],
+) -> bool:
+    marker = manifest.get("app_ready_validation")
+    if not isinstance(marker, dict) or marker.get("app_ready") is not True:
+        return False
+    if int(marker.get("validation_version") or 0) != _PRODUCT_APP_READY_VALIDATION_VERSION:
+        return False
+    if marker.get("theme") != selection.theme or marker.get("view_mode") != view_mode:
+        return False
+    if marker.get("season_profile") != selection.season_profile or marker.get("subseason") != selection.subseason:
+        return False
+    if bool(marker.get("require_standard_grid_coverage")) != bool(settings.forecast_products.require_standard_grid_coverage):
+        return False
+    if int(marker.get("standard_grid_min_y") or 0) != int(settings.forecast_products.standard_grid_min_y):
+        return False
+    if int(marker.get("standard_grid_min_x") or 0) != int(settings.forecast_products.standard_grid_min_x):
+        return False
+    if float(marker.get("standard_grid_coverage_tolerance_degrees") or -1.0) != float(
+        settings.forecast_products.standard_grid_coverage_tolerance_degrees
+    ):
+        return False
+    if float(marker.get("standard_grid_resolution_degrees") or -1.0) != float(STANDARD_PRODUCT_GRID_RESOLUTION_DEGREES):
+        return False
+    try:
+        data_path = Path(str(manifest["data_path"]))
+        stat = data_path.stat()
+    except Exception:
+        return False
+    return int(marker.get("data_mtime_ns") or -1) == int(stat.st_mtime_ns) and int(marker.get("data_size") or -1) == int(
+        stat.st_size
+    )
+
+
+def _selection_manifest_pair_is_usable_for_options(
+    settings: Settings,
+    selection: ForecastProductSelection,
+    probability_manifest_path: Path,
+    deterministic_manifest_path: Path,
+) -> bool:
+    return (
+        _manifest_file_is_usable(settings, selection, "probability", probability_manifest_path)
+        and _manifest_file_is_usable(settings, selection, "deterministic", deterministic_manifest_path)
+        and _selection_product_pair_is_compatible(settings, selection)
+    )
+
+
+def _final_product_pair_is_usable(
+    settings: Settings,
+    selection: ForecastProductSelection,
+    source: ForecastProductPairSourceConfig,
+) -> bool:
+    return (
+        _final_product_source_view_is_usable(settings, selection, source, "probability")
+        and _final_product_source_view_is_usable(settings, selection, source, "deterministic")
+    )
+
+
+def _final_product_source_view_is_usable(
+    settings: Settings,
+    selection: ForecastProductSelection,
+    source: ForecastProductPairSourceConfig,
+    view_mode: ViewMode,
+) -> bool:
+    source_path = source.probability_path if view_mode == "probability" else source.deterministic_path
+    if not source_path.exists():
+        return False
+    return _cached_product_dataset_is_usable(settings, selection, view_mode, source_path)
+
+
+def _cached_product_dataset_is_usable(
+    settings: Settings,
+    selection: ForecastProductSelection,
+    view_mode: ViewMode,
+    data_path: Path,
+) -> bool:
+    key = _product_dataset_validation_cache_key(settings, selection, view_mode, data_path)
+    if key is None:
+        return False
+    with _NETCDF_IO_LOCK:
+        cached = _PRODUCT_DATASET_USABILITY_CACHE.get(key)
+        if cached is not None:
+            return cached
+        try:
+            _validate_product_dataset_for_selection(settings, selection, view_mode, data_path)
+        except Exception:
+            _PRODUCT_DATASET_USABILITY_CACHE[key] = False
+            return False
+        _PRODUCT_DATASET_USABILITY_CACHE[key] = True
+        return True
+
+
+def _product_dataset_validation_cache_key(
+    settings: Settings,
+    selection: ForecastProductSelection,
+    view_mode: ViewMode,
+    data_path: Path,
+) -> tuple[Any, ...] | None:
+    try:
+        resolved = data_path.resolve()
+        stat = resolved.stat()
+    except Exception:
+        return None
+    return (
+        str(resolved).lower(),
+        int(stat.st_mtime_ns),
+        int(stat.st_size),
+        selection.theme,
+        selection.season_profile,
+        selection.subseason,
+        view_mode,
+        _selection_mask_zone(settings, selection),
+        bool(settings.forecast_products.require_standard_grid_coverage),
+        int(settings.forecast_products.standard_grid_min_y),
+        int(settings.forecast_products.standard_grid_min_x),
+        float(settings.forecast_products.standard_grid_coverage_tolerance_degrees),
+        float(STANDARD_PRODUCT_GRID_RESOLUTION_DEGREES),
+        str(settings.seasonal_map.district_geojson_path),
+        float(settings.seasonal_map.northern_latitude_threshold),
+        id(_validate_product_dataset_for_selection),
+    )
 
 
 def _available_manifest_path(
@@ -1880,13 +3368,27 @@ def _selection_mask_zone(settings: Settings, selection: ForecastProductSelection
     return str(profile.native_zone).strip().lower() or GHANA_PRODUCT_MASK_ZONE
 
 
+def _subseason_mask_zone(settings: Settings, selection: ForecastProductSelection) -> str | None:
+    if selection.subseason is None:
+        return None
+    zones = {
+        str(profile.native_zone).strip().lower()
+        for profile in settings.seasonal_map.profiles.values()
+        if _profile_subseason_normal(profile, selection.theme, selection.subseason) is not None
+    }
+    zones.discard("")
+    if len(zones) == 1:
+        return next(iter(zones))
+    return None
+
+
 def _validate_product_dataset_for_selection(
     settings: Settings,
     selection: ForecastProductSelection,
     view_mode: ViewMode,
     data_path: Path,
 ) -> None:
-    with xr.open_dataset(data_path) as dataset:
+    with _open_product_dataset(data_path) as dataset:
         data_var = dataset[list(dataset.data_vars)[0]]
         _validate_product_dimensions(view_mode, data_var)
         if "Y" not in dataset.coords or "X" not in dataset.coords:
@@ -1895,6 +3397,7 @@ def _validate_product_dataset_for_selection(
         longitudes = np.asarray(dataset["X"].values, dtype=float)
         if latitudes.ndim != 1 or longitudes.ndim != 1 or latitudes.size == 0 or longitudes.size == 0:
             raise ForecastProductIncompleteError("Forecast product grid coordinates must be non-empty one-dimensional arrays.")
+        _validate_standard_product_grid_coverage(settings, selection, latitudes, longitudes)
         if view_mode == "probability":
             category_codes = tuple(str(item) for item in data_var.coords["probability"].values.tolist())
             if category_codes != PROBABILITY_CODES:
@@ -1909,11 +3412,103 @@ def _validate_product_dataset_for_selection(
             masked = _apply_selection_spatial_mask(settings, selection, latitudes, longitudes, values)
             if not np.isfinite(masked).any():
                 raise ForecastProductIncompleteError("Probability product has no finite values for the requested selection.")
+            _validate_standard_product_finite_coverage(settings, selection, latitudes, longitudes, np.isfinite(masked).any(axis=0))
         else:
             values = np.asarray(data_var.isel(T=0).values, dtype=float)
             masked = _apply_selection_spatial_mask(settings, selection, latitudes, longitudes, values)
             if not np.isfinite(masked).any():
                 raise ForecastProductIncompleteError("Deterministic product has no finite values for the requested selection.")
+            _validate_standard_product_finite_coverage(settings, selection, latitudes, longitudes, np.isfinite(masked))
+
+
+def _validate_standard_product_grid_coverage(
+    settings: Settings,
+    selection: ForecastProductSelection,
+    latitudes: np.ndarray,
+    longitudes: np.ndarray,
+) -> None:
+    if not settings.forecast_products.require_standard_grid_coverage:
+        return
+    min_y = max(int(settings.forecast_products.standard_grid_min_y), 1)
+    min_x = max(int(settings.forecast_products.standard_grid_min_x), 1)
+    if latitudes.size < min_y or longitudes.size < min_x:
+        raise ForecastProductIncompleteError(
+            "Forecast product grid is too coarse for standard raster output: "
+            f"received {latitudes.size}x{longitudes.size}, expected at least {min_y}x{min_x}."
+        )
+    _validate_axis_coverage(settings, selection, latitudes, longitudes, "grid")
+
+
+def _validate_standard_product_finite_coverage(
+    settings: Settings,
+    selection: ForecastProductSelection,
+    latitudes: np.ndarray,
+    longitudes: np.ndarray,
+    valid_mask: np.ndarray,
+) -> None:
+    if not settings.forecast_products.require_standard_grid_coverage:
+        return
+    finite_rows, finite_cols = np.where(valid_mask)
+    if finite_rows.size == 0 or finite_cols.size == 0:
+        raise ForecastProductIncompleteError("Forecast product does not contain finite cells in the selected footprint.")
+    finite_latitudes = np.asarray(latitudes[finite_rows], dtype=float)
+    finite_longitudes = np.asarray(longitudes[finite_cols], dtype=float)
+    _validate_axis_coverage(settings, selection, finite_latitudes, finite_longitudes, "finite-cell")
+
+
+def _validate_axis_coverage(
+    settings: Settings,
+    selection: ForecastProductSelection,
+    latitudes: np.ndarray,
+    longitudes: np.ndarray,
+    coverage_label: str,
+) -> None:
+    required_min_lon, required_min_lat, required_max_lon, required_max_lat = _required_product_coverage_bounds(
+        settings,
+        selection,
+    )
+    covered_min_lon, covered_max_lon = _axis_coverage_bounds(longitudes)
+    covered_min_lat, covered_max_lat = _axis_coverage_bounds(latitudes)
+    tolerance = max(float(settings.forecast_products.standard_grid_coverage_tolerance_degrees), 0.0)
+    missing_longitude = covered_min_lon > required_min_lon + tolerance or covered_max_lon < required_max_lon - tolerance
+    missing_latitude = covered_min_lat > required_min_lat + tolerance or covered_max_lat < required_max_lat - tolerance
+    if missing_longitude or missing_latitude:
+        zone = _selection_mask_zone(settings, selection)
+        raise ForecastProductIncompleteError(
+            f"Forecast product {coverage_label} coverage does not cover the {zone} footprint."
+        )
+
+
+def _required_product_coverage_bounds(
+    settings: Settings,
+    selection: ForecastProductSelection,
+) -> tuple[float, float, float, float]:
+    zone = _selection_mask_zone(settings, selection)
+    features = _load_district_zone_features(
+        str(settings.seasonal_map.district_geojson_path),
+        float(settings.seasonal_map.northern_latitude_threshold),
+    )
+    selected_bboxes = [
+        feature["bbox"]
+        for feature in features
+        if zone == GHANA_PRODUCT_MASK_ZONE or zone in feature["zones"]
+    ]
+    if not selected_bboxes:
+        raise ForecastProductIncompleteError(f"No district footprint is configured for mask_zone='{zone}'.")
+    return (
+        min(bbox[0] for bbox in selected_bboxes),
+        min(bbox[1] for bbox in selected_bboxes),
+        max(bbox[2] for bbox in selected_bboxes),
+        max(bbox[3] for bbox in selected_bboxes),
+    )
+
+
+def _axis_coverage_bounds(axis: np.ndarray) -> tuple[float, float]:
+    axis_values = tuple(sorted({float(value) for value in np.asarray(axis, dtype=float).tolist() if math.isfinite(float(value))}))
+    if not axis_values:
+        raise ForecastProductIncompleteError("Forecast product grid coordinates are empty.")
+    bounds = _axis_cell_bounds(axis_values)
+    return min(bound[0] for bound in bounds), max(bound[1] for bound in bounds)
 
 
 def _validate_product_dimensions(view_mode: ViewMode, data_var: xr.DataArray) -> None:
@@ -1955,15 +3550,35 @@ def _district_zone_cell_mask_cached(
     features = _load_district_zone_features(geojson_path, threshold)
     latitude_bounds = _axis_cell_bounds(latitude_key)
     longitude_bounds = _axis_cell_bounds(longitude_key)
-    mask: list[tuple[bool, ...]] = []
-    for latitude_index, _latitude in enumerate(latitude_key):
-        lat_min, lat_max = latitude_bounds[latitude_index]
-        row: list[bool] = []
-        for longitude_index, _longitude in enumerate(longitude_key):
-            lon_min, lon_max = longitude_bounds[longitude_index]
-            row.append(_cell_matches_any_zone_feature(lon_min, lat_min, lon_max, lat_max, native_zone, features))
-        mask.append(tuple(row))
-    return tuple(mask)
+    mask = np.zeros((len(latitude_key), len(longitude_key)), dtype=bool)
+    for feature in features:
+        if native_zone != GHANA_PRODUCT_MASK_ZONE and native_zone not in feature["zones"]:
+            continue
+        bbox_min_lon, bbox_min_lat, bbox_max_lon, bbox_max_lat = feature["bbox"]
+        latitude_indices = [
+            index
+            for index, (lat_min, lat_max) in enumerate(latitude_bounds)
+            if lat_max >= bbox_min_lat and lat_min <= bbox_max_lat
+        ]
+        longitude_indices = [
+            index
+            for index, (lon_min, lon_max) in enumerate(longitude_bounds)
+            if lon_max >= bbox_min_lon and lon_min <= bbox_max_lon
+        ]
+        for latitude_index in latitude_indices:
+            lat_min, lat_max = latitude_bounds[latitude_index]
+            for longitude_index in longitude_indices:
+                if mask[latitude_index, longitude_index]:
+                    continue
+                lon_min, lon_max = longitude_bounds[longitude_index]
+                mask[latitude_index, longitude_index] = _geometry_intersects_cell(
+                    lon_min,
+                    lat_min,
+                    lon_max,
+                    lat_max,
+                    feature["geometry"],
+                )
+    return tuple(tuple(bool(value) for value in row) for row in mask.tolist())
 
 
 @lru_cache(maxsize=4)
@@ -2290,13 +3905,153 @@ def _manifest_payload_is_usable_for_selection(
     try:
         if not _manifest_payload_is_available_for_selection(settings, selection, manifest):
             return False
-        data_path = Path(str(manifest["data_path"]))
         if not _manifest_source_policy_allows_selection(settings, selection, manifest):
             return False
-        _validate_product_dataset_for_selection(settings, selection, view_mode, data_path)
+        if _manifest_usable_data_path(settings, selection, view_mode, manifest) is None:
+            return _manifest_payload_is_standardizable_for_response(settings, selection, view_mode, manifest)
     except Exception:
         return False
     return True
+
+
+def _manifest_payload_is_standardizable_for_response(
+    settings: Settings,
+    selection: ForecastProductSelection,
+    view_mode: ViewMode,
+    manifest: dict[str, Any],
+) -> bool:
+    return bool(_manifest_standardizable_data_paths(settings, selection, view_mode, manifest))
+
+
+def _manifest_usable_data_path(
+    settings: Settings,
+    selection: ForecastProductSelection,
+    view_mode: ViewMode,
+    manifest: dict[str, Any],
+) -> Path | None:
+    for data_path in _manifest_candidate_data_paths(manifest):
+        if data_path.exists() and data_path.stat().st_size > 0 and _cached_product_dataset_is_usable(
+            settings,
+            selection,
+            view_mode,
+            data_path,
+        ):
+            return data_path
+    return None
+
+
+def _manifest_standardizable_data_paths(
+    settings: Settings,
+    selection: ForecastProductSelection,
+    view_mode: ViewMode,
+    manifest: dict[str, Any],
+) -> tuple[Path, ...]:
+    if not _manifest_response_standardization_fallback_allowed(settings, selection, manifest):
+        return ()
+    paths: list[Path] = []
+    for data_path in _manifest_candidate_data_paths(manifest):
+        if (
+            data_path.exists()
+            and data_path.stat().st_size > 0
+            and _product_dataset_has_standardizable_payload(view_mode, data_path)
+        ):
+            paths.append(data_path)
+    return tuple(paths)
+
+
+def _manifest_source_standardized_response_paths(
+    settings: Settings,
+    selection: ForecastProductSelection,
+    view_mode: ViewMode,
+    manifest: dict[str, Any],
+) -> tuple[Path, ...]:
+    if not _manifest_source_standardized_response_allowed(settings, selection, manifest):
+        return ()
+    source_path_value = manifest.get("source_path")
+    if source_path_value is None:
+        return ()
+    try:
+        source_path = Path(str(source_path_value))
+        data_path = Path(str(manifest.get("data_path") or ""))
+    except Exception:
+        return ()
+    if source_path == data_path:
+        return ()
+    if not source_path.exists() or source_path.stat().st_size <= 0:
+        return ()
+    if not _product_dataset_has_standardizable_payload(view_mode, source_path):
+        return ()
+    return (source_path,)
+
+
+def _manifest_source_standardized_response_allowed(
+    settings: Settings,
+    selection: ForecastProductSelection,
+    manifest: dict[str, Any],
+) -> bool:
+    if selection.theme not in SEASON_BASED_THEMES or selection.season_profile != "northern_single":
+        return False
+    if not settings.forecast_products.require_standard_grid_coverage:
+        return False
+    if str(manifest.get("promotion_method") or "") != STANDARD_PRODUCT_PROMOTION_METHOD:
+        return False
+    if not _manifest_originated_from_daily_derived(manifest):
+        return False
+    return _manifest_payload_is_available_for_selection(settings, selection, manifest)
+
+
+def _manifest_response_standardization_fallback_allowed(
+    settings: Settings,
+    selection: ForecastProductSelection,
+    manifest: dict[str, Any],
+) -> bool:
+    if selection.theme != "rainy_days" or selection.subseason is None:
+        return False
+    if not settings.forecast_products.require_standard_grid_coverage:
+        return False
+    if not _manifest_payload_is_available_for_selection(settings, selection, manifest):
+        return False
+    promotion_method = str(manifest.get("promotion_method") or "").strip().lower()
+    return promotion_method == "bilinear_standard_grid"
+
+
+def _product_dataset_has_standardizable_payload(view_mode: ViewMode, data_path: Path) -> bool:
+    try:
+        with _open_product_dataset(data_path) as dataset:
+            data_var = dataset[list(dataset.data_vars)[0]]
+            _validate_product_dimensions(view_mode, data_var)
+            if "Y" not in dataset.coords or "X" not in dataset.coords:
+                return False
+            latitudes = np.asarray(dataset["Y"].values, dtype=float)
+            longitudes = np.asarray(dataset["X"].values, dtype=float)
+            if latitudes.ndim != 1 or longitudes.ndim != 1 or latitudes.size == 0 or longitudes.size == 0:
+                return False
+            if view_mode == "probability":
+                category_codes = tuple(str(item) for item in data_var.coords["probability"].values.tolist())
+                if category_codes != PROBABILITY_CODES:
+                    return False
+                values = _clean_probability_grid(np.asarray(data_var.isel(T=0).values, dtype=float))
+                totals = np.nansum(np.where(np.isfinite(values), values, 0.0), axis=0)
+                return bool(np.any(np.isfinite(values).any(axis=0) & (totals > 0.0)))
+            values = np.asarray(data_var.isel(T=0).values, dtype=float)
+            return bool(np.isfinite(values).any())
+    except Exception:
+        return False
+
+
+def _manifest_candidate_data_paths(manifest: dict[str, Any]) -> tuple[Path, ...]:
+    paths: list[Path] = []
+    for key in ("data_path", "source_path"):
+        value = manifest.get(key)
+        if value is None:
+            continue
+        try:
+            path = Path(str(value))
+        except Exception:
+            continue
+        if path not in paths:
+            paths.append(path)
+    return tuple(paths)
 
 
 def _manifest_payload_is_available_for_selection(
@@ -2345,7 +4100,16 @@ def _selection_product_pair_is_compatible(settings: Settings, selection: Forecas
         deterministic_manifest = json.loads(deterministic_manifest_path.read_text(encoding="utf-8"))
         probability_path = Path(str(probability_manifest["data_path"]))
         deterministic_path = Path(str(deterministic_manifest["data_path"]))
-        with xr.open_dataset(probability_path) as probability_dataset, xr.open_dataset(deterministic_path) as deterministic_dataset:
+        key = _product_pair_compatibility_cache_key(settings, selection, probability_path, deterministic_path)
+        if key is None:
+            return False
+        with _NETCDF_IO_LOCK:
+            cached = _PRODUCT_PAIR_COMPATIBILITY_CACHE.get(key)
+            if cached is not None:
+                return cached
+        with _open_product_dataset(probability_path) as probability_dataset, _open_product_dataset(
+            deterministic_path
+        ) as deterministic_dataset:
             probability_var = probability_dataset[list(probability_dataset.data_vars)[0]]
             deterministic_var = deterministic_dataset[list(deterministic_dataset.data_vars)[0]]
             _validate_product_dimensions("probability", probability_var)
@@ -2354,14 +4118,33 @@ def _selection_product_pair_is_compatible(settings: Settings, selection: Forecas
             probability_x = np.asarray(probability_dataset["X"].values, dtype=float)
             deterministic_y = np.asarray(deterministic_dataset["Y"].values, dtype=float)
             deterministic_x = np.asarray(deterministic_dataset["X"].values, dtype=float)
-            return (
+            compatible = (
                 probability_var.sizes["Y"] == deterministic_var.sizes["Y"]
                 and probability_var.sizes["X"] == deterministic_var.sizes["X"]
                 and np.allclose(probability_y, deterministic_y)
                 and np.allclose(probability_x, deterministic_x)
             )
+        with _NETCDF_IO_LOCK:
+            _PRODUCT_PAIR_COMPATIBILITY_CACHE[key] = compatible
+        return compatible
     except Exception:
+        if "key" in locals() and key is not None:
+            with _NETCDF_IO_LOCK:
+                _PRODUCT_PAIR_COMPATIBILITY_CACHE[key] = False
         return False
+
+
+def _product_pair_compatibility_cache_key(
+    settings: Settings,
+    selection: ForecastProductSelection,
+    probability_path: Path,
+    deterministic_path: Path,
+) -> tuple[Any, ...] | None:
+    probability_key = _product_dataset_validation_cache_key(settings, selection, "probability", probability_path)
+    deterministic_key = _product_dataset_validation_cache_key(settings, selection, "deterministic", deterministic_path)
+    if probability_key is None or deterministic_key is None:
+        return None
+    return probability_key + deterministic_key
 
 
 def _manifest_source_policy_allows_selection(
@@ -2369,9 +4152,7 @@ def _manifest_source_policy_allows_selection(
     selection: ForecastProductSelection,
     manifest: dict[str, Any],
 ) -> bool:
-    generation_backend = str(manifest.get("generation_backend") or "").lower()
-    source_artifact_type = str(manifest.get("source_artifact_type") or "").lower()
-    is_daily_derived = "daily_wass2s" in generation_backend or source_artifact_type == "daily_wass2s_derived"
+    is_daily_derived = _manifest_originated_from_daily_derived(manifest)
     if _selection_requires_profile_derived_onset(selection) and not is_daily_derived:
         return False
     if selection.theme in FINAL_PRODUCT_ONLY_THEMES and is_daily_derived:
@@ -2381,11 +4162,95 @@ def _manifest_source_policy_allows_selection(
     return True
 
 
+def _manifest_originated_from_daily_derived(manifest: dict[str, Any]) -> bool:
+    generation_backend = str(manifest.get("generation_backend") or "").lower()
+    source_artifact_type = str(manifest.get("source_artifact_type") or "").lower()
+    promotion_source_artifact_type = str(manifest.get("promotion_source_artifact_type") or "").lower()
+    return (
+        "daily_wass2s" in generation_backend
+        or source_artifact_type == "daily_wass2s_derived"
+        or promotion_source_artifact_type == "daily_wass2s_derived"
+    )
+
+
+def _manifest_grid_matches_current_target(
+    settings: Settings,
+    selection: ForecastProductSelection,
+    view_mode: ViewMode,
+    manifest: dict[str, Any],
+) -> bool:
+    if not settings.forecast_products.require_standard_grid_coverage:
+        return True
+    generation_backend = str(manifest.get("generation_backend") or "").lower()
+    if "regridded_final_netcdf" not in generation_backend:
+        return False
+    if str(manifest.get("promotion_method") or "") != STANDARD_PRODUCT_PROMOTION_METHOD:
+        return False
+    try:
+        data_path = Path(str(manifest["data_path"]))
+        target_latitudes, target_longitudes = _standard_product_grid(settings, selection, view_mode)
+        with _open_product_dataset(data_path) as dataset:
+            latitudes = np.asarray(dataset["Y"].values, dtype=float)
+            longitudes = np.asarray(dataset["X"].values, dtype=float)
+    except Exception:
+        return False
+    return (
+        latitudes.shape == target_latitudes.shape
+        and longitudes.shape == target_longitudes.shape
+        and np.allclose(latitudes, target_latitudes)
+        and np.allclose(longitudes, target_longitudes)
+    )
+
+
+def _manifest_is_promotable_daily_derived(
+    settings: Settings,
+    selection: ForecastProductSelection,
+    manifest: dict[str, Any],
+) -> bool:
+    if not _selection_should_promote_daily_derived(settings, selection):
+        return False
+    return _manifest_source_artifact_type(manifest) == "daily_wass2s_derived"
+
+
+def _promotable_derived_manifest_for_selection(
+    settings: Settings,
+    selection: ForecastProductSelection,
+    view_mode: ViewMode,
+) -> dict[str, Any] | None:
+    for manifest_path in (
+        _canonical_manifest_path(
+            settings,
+            selection.theme,
+            view_mode,
+            season_profile=selection.season_profile,
+            subseason=selection.subseason,
+        ),
+        _legacy_manifest_path(settings, selection.theme, view_mode),
+    ):
+        if not manifest_path.exists():
+            continue
+        try:
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        if not _manifest_is_promotable_daily_derived(settings, selection, manifest):
+            continue
+        try:
+            data_path = Path(str(manifest["data_path"]))
+        except Exception:
+            continue
+        if data_path.exists() and data_path.stat().st_size > 0:
+            return _normalize_manifest_selection(manifest, selection, manifest_path)
+    return None
+
+
 def _selection_view_is_materializable(
     settings: Settings,
     selection: ForecastProductSelection,
     view_mode: ViewMode,
 ) -> bool:
+    if _promotable_derived_manifest_for_selection(settings, selection, view_mode) is not None:
+        return True
     if _selection_requires_profile_derived_onset(selection):
         return _selection_can_derive_from_daily(settings, selection)
     final_source = _final_product_source_for_selection(settings, selection)
@@ -2393,7 +4258,10 @@ def _selection_view_is_materializable(
         return _final_product_source_has_file(final_source, view_mode)
     if _selection_can_derive_from_daily(settings, selection):
         return True
-    return _has_source_file(_source_for_theme(settings, selection.theme), view_mode)
+    source_path = _source_path_for_view(_source_for_theme(settings, selection.theme), view_mode)
+    if source_path is None:
+        return False
+    return _source_file_is_usable_for_selection(settings, selection, view_mode, source_path)
 
 
 def _selection_requires_profile_derived_onset(selection: ForecastProductSelection) -> bool:
@@ -2528,8 +4396,23 @@ def _has_source_artifacts(source: ForecastProductSourceConfig) -> bool:
 
 
 def _has_source_file(source: ForecastProductSourceConfig, view_mode: ViewMode) -> bool:
-    source_path = source.probability_path if view_mode == "probability" else source.deterministic_path
+    source_path = _source_path_for_view(source, view_mode)
     return source_path is not None and source_path.exists()
+
+
+def _source_path_for_view(source: ForecastProductSourceConfig, view_mode: ViewMode) -> Path | None:
+    return source.probability_path if view_mode == "probability" else source.deterministic_path
+
+
+def _source_file_is_usable_for_selection(
+    settings: Settings,
+    selection: ForecastProductSelection,
+    view_mode: ViewMode,
+    source_path: Path,
+) -> bool:
+    if not source_path.exists():
+        return False
+    return _cached_product_dataset_is_usable(settings, selection, view_mode, source_path)
 
 
 def _canonical_manifest_path(
@@ -2797,7 +4680,7 @@ def _build_probability_preview_png(data_path: Path, theme: str) -> bytes:
 
 
 def _build_deterministic_preview_png(data_path: Path, theme: str) -> bytes:
-    with xr.open_dataset(data_path) as dataset:
+    with _open_product_dataset(data_path) as dataset:
         data_var = dataset[list(dataset.data_vars)[0]].isel(T=0)
         values = np.asarray(data_var.values, dtype=float)
     spec = _theme_spec(theme)
@@ -2807,7 +4690,7 @@ def _build_deterministic_preview_png(data_path: Path, theme: str) -> bytes:
 
 def _prepare_probability_preview_payload(data_path: Path, theme: str) -> PreparedProbabilityProduct:
     spec = _theme_spec(theme)
-    with xr.open_dataset(data_path) as dataset:
+    with _open_product_dataset(data_path) as dataset:
         data_var = dataset[list(dataset.data_vars)[0]].isel(T=0)
         category_codes = tuple(str(item) for item in data_var.coords["probability"].values.tolist())
         latitudes = np.asarray(dataset["Y"].values, dtype=float)

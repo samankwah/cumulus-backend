@@ -103,3 +103,25 @@ advisory:
 train:
   test_fraction: 0.15
   validation_fraction: 0.15
+forecast_products:
+  require_standard_grid_coverage: true
+  standard_grid_min_y: 10
+  standard_grid_min_x: 10
+  standard_grid_coverage_tolerance_degrees: 0.35
+  final_product_sources:
+    rainfall_amount:
+      MAM:
+        deterministic_path: E:/Forecast_Det_PRCPMarAprMay_2026.nc
+        probability_path: E:/Forecast_Prob_PRCPMarAprMay_2026.nc
+        forecast_year: 2026
+        title: Seasonal Rainfall Total
+      MJJ:
+        deterministic_path: E:/obj_files/Forecast_Det_PRCPMayJunJul_2026.nc
+        probability_path: E:/obj_files/Forecast_Prob_PRCPMayJunJul_2026.nc
+        forecast_year: 2026
+        title: Seasonal Rainfall Total
+      JAS:
+        deterministic_path: E:/obj_files/Forecast_Det_PRCPJulAugSep_2026.nc
+        probability_path: E:/obj_files/Forecast_Prob_PRCPJulAugSep_2026.nc
+        forecast_year: 2026
+        title: Seasonal Rainfall Total

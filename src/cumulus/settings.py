@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from functools import lru_cache
+import json
 import os
 from pathlib import Path
 from typing import Any
@@ -180,6 +181,10 @@ class ForecastProductConfig(BaseModel):
     daily_forecast_glob: str = "forecast_*_PRCP_*Ic.nc"
     derived_min_member_count: int = 2
     derived_min_coverage_fraction: float = 0.85
+    require_standard_grid_coverage: bool = True
+    standard_grid_min_y: int = 10
+    standard_grid_min_x: int = 10
+    standard_grid_coverage_tolerance_degrees: float = 0.35
     final_product_dirs: list[Path] = Field(
         default_factory=lambda: [
             Path("E:/"),
@@ -373,6 +378,7 @@ class Settings(BaseSettings):
             payload["seasonal_map"] = seasonal_map_yaml.get("seasonal_map", seasonal_map_yaml)
         if "CUMULUS_DEFAULT_FORECAST_SOURCE" in os.environ:
             payload["default_forecast_source"] = os.environ["CUMULUS_DEFAULT_FORECAST_SOURCE"]
+        _apply_environment_overrides(payload)
         payload["raw_data_dir"] = _resolve_raw_data_dir(payload)
         payload["model_artifact_dir"] = _resolve_artifact_dir(payload, "model_artifact_dir", Path("artifacts/models"))
         payload["bias_artifact_dir"] = _resolve_artifact_dir(payload, "bias_artifact_dir", Path("artifacts/bias"))
@@ -431,6 +437,33 @@ def _merge_forecast_sources(payload: dict[str, Any]) -> dict[str, dict[str, Any]
         config.setdefault("manifest_path", None)
         config["data_origin"] = classify_data_origin(config.get("path")) if config.get("path") else "missing"
     return merged
+
+
+def _apply_environment_overrides(payload: dict[str, Any]) -> None:
+    prefix = "CUMULUS_"
+    for env_key, raw_value in os.environ.items():
+        if not env_key.startswith(prefix):
+            continue
+        path = [part.lower() for part in env_key[len(prefix) :].split("__") if part]
+        if not path:
+            continue
+        target = payload
+        for part in path[:-1]:
+            current = target.get(part)
+            if isinstance(current, BaseModel):
+                current = current.model_dump()
+            if not isinstance(current, dict):
+                current = {}
+            target[part] = current
+            target = current
+        target[path[-1]] = _parse_environment_value(raw_value)
+
+
+def _parse_environment_value(value: str) -> Any:
+    try:
+        return json.loads(value)
+    except Exception:
+        return value
 
 
 def _normalize_source_id(source_id: str) -> str:

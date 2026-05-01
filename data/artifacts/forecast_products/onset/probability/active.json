@@ -10,7 +10,7 @@
   "generation_backend": "bridge_generated",
   "refresh_interval_seconds": 1800,
   "freshness_threshold_hours": 18,
-  "data_path": "C:\\Users\\CRAFT\\Desktop\\future MEST projects\\Backend\\cumulus\\backend\\data\\artifacts\\forecast_products\\onset\\probability\\Forecast_Prob_PRCPOnset_2025.nc",
-  "preview_path": "C:\\Users\\CRAFT\\Desktop\\future MEST projects\\Backend\\cumulus\\backend\\data\\artifacts\\forecast_products\\onset\\probability\\preview.png",
-  "manifest_path": "C:\\Users\\CRAFT\\Desktop\\future MEST projects\\Backend\\cumulus\\backend\\data\\artifacts\\forecast_products\\onset\\probability\\active.json"
+  "data_path": "data\\artifacts\\forecast_products\\onset\\probability\\Forecast_Prob_PRCPOnset_2025.nc",
+  "preview_path": "data\\artifacts\\forecast_products\\onset\\probability\\preview.png",
+  "manifest_path": "data\\artifacts\\forecast_products\\onset\\probability\\active.json"
 }

@@ -11,7 +11,7 @@
   "source_run_id": "early_dry_spell_probability_northern_single_2026_20260501T061429Z",
   "generation_backend": "bridge_generated_regridded_final_netcdf",
   "source_artifact_type": "final_netcdf",
-  "source_path": "C:\\Users\\CRAFT\\Desktop\\future MEST projects\\Backend\\cumulus\\backend\\data\\artifacts\\forecast_products\\early_dry_spell\\probability\\northern_single\\Forecast_Prob_early_dry_spell_northern_single_2026_coarse.nc",
+  "source_path": "data\\artifacts\\forecast_products\\early_dry_spell\\probability\\northern_single\\Forecast_Prob_early_dry_spell_northern_single_2026_coarse.nc",
   "promotion_source_product_id": "early_dry_spell_probability_northern_single_2026_daily_wass2s_source",
   "promotion_source_generation_backend": "bridge_generated_daily_wass2s",
   "promotion_source_artifact_type": "daily_wass2s_derived",
@@ -19,8 +19,8 @@
   "promotion_grid_resolution_degrees": 0.4,
   "refresh_interval_seconds": 1800,
   "freshness_threshold_hours": 18,
-  "data_path": "C:\\Users\\CRAFT\\Desktop\\future MEST projects\\Backend\\cumulus\\backend\\data\\artifacts\\forecast_products\\early_dry_spell\\probability\\northern_single\\Forecast_Prob_early_dry_spell_northern_single_2026_regridded.nc",
-  "preview_path": "C:\\Users\\CRAFT\\Desktop\\future MEST projects\\Backend\\cumulus\\backend\\data\\artifacts\\forecast_products\\early_dry_spell\\probability\\northern_single\\preview.png",
+  "data_path": "data\\artifacts\\forecast_products\\early_dry_spell\\probability\\northern_single\\Forecast_Prob_early_dry_spell_northern_single_2026_regridded.nc",
+  "preview_path": "data\\artifacts\\forecast_products\\early_dry_spell\\probability\\northern_single\\preview.png",
   "app_ready_validation": {
     "app_ready": true,
     "validation_version": 4,
@@ -29,7 +29,7 @@
     "view_mode": "probability",
     "season_profile": "northern_single",
     "subseason": null,
-    "data_path": "C:\\Users\\CRAFT\\Desktop\\future MEST projects\\Backend\\cumulus\\backend\\data\\artifacts\\forecast_products\\early_dry_spell\\probability\\northern_single\\Forecast_Prob_early_dry_spell_northern_single_2026_regridded.nc",
+    "data_path": "data\\artifacts\\forecast_products\\early_dry_spell\\probability\\northern_single\\Forecast_Prob_early_dry_spell_northern_single_2026_regridded.nc",
     "data_mtime_ns": 1777616069467585500,
     "data_size": 8544,
     "require_standard_grid_coverage": true,
@@ -38,5 +38,5 @@
     "standard_grid_coverage_tolerance_degrees": 0.35,
     "standard_grid_resolution_degrees": 0.4
   },
-  "manifest_path": "C:\\Users\\CRAFT\\Desktop\\future MEST projects\\Backend\\cumulus\\backend\\data\\artifacts\\forecast_products\\early_dry_spell\\probability\\northern_single\\active.json"
+  "manifest_path": "data\\artifacts\\forecast_products\\early_dry_spell\\probability\\northern_single\\active.json"
 }

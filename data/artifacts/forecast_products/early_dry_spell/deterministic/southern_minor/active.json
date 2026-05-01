@@ -11,7 +11,7 @@
   "source_run_id": "early_dry_spell_deterministic_southern_minor_2025_20260501T061440Z",
   "generation_backend": "bridge_generated_regridded_final_netcdf",
   "source_artifact_type": "final_netcdf",
-  "source_path": "C:\\Users\\CRAFT\\Desktop\\MEST_projects\\wass2s\\Agro_PRESAGG_2026_ic_1\\forecasts\\Forecast_Det_PRCPdryspellonset_2025.nc",
+  "source_path": "data\\artifacts\\forecast_products\\early_dry_spell\\deterministic\\southern_minor\\Forecast_Det_PRCPdryspellonset_2025.nc",
   "promotion_source_product_id": "early_dry_spell_deterministic_2025_source",
   "promotion_source_generation_backend": "bridge_generated_final_netcdf",
   "promotion_source_artifact_type": "final_netcdf",
@@ -19,8 +19,8 @@
   "promotion_grid_resolution_degrees": 0.4,
   "refresh_interval_seconds": 1800,
   "freshness_threshold_hours": 18,
-  "data_path": "C:\\Users\\CRAFT\\Desktop\\future MEST projects\\Backend\\cumulus\\backend\\data\\artifacts\\forecast_products\\early_dry_spell\\deterministic\\southern_minor\\Forecast_Det_early_dry_spell_southern_minor_2025_regridded.nc",
-  "preview_path": "C:\\Users\\CRAFT\\Desktop\\future MEST projects\\Backend\\cumulus\\backend\\data\\artifacts\\forecast_products\\early_dry_spell\\deterministic\\southern_minor\\preview.png",
+  "data_path": "data\\artifacts\\forecast_products\\early_dry_spell\\deterministic\\southern_minor\\Forecast_Det_early_dry_spell_southern_minor_2025_regridded.nc",
+  "preview_path": "data\\artifacts\\forecast_products\\early_dry_spell\\deterministic\\southern_minor\\preview.png",
   "app_ready_validation": {
     "app_ready": true,
     "validation_version": 4,
@@ -29,7 +29,7 @@
     "view_mode": "deterministic",
     "season_profile": "southern_minor",
     "subseason": null,
-    "data_path": "C:\\Users\\CRAFT\\Desktop\\future MEST projects\\Backend\\cumulus\\backend\\data\\artifacts\\forecast_products\\early_dry_spell\\deterministic\\southern_minor\\Forecast_Det_early_dry_spell_southern_minor_2025_regridded.nc",
+    "data_path": "data\\artifacts\\forecast_products\\early_dry_spell\\deterministic\\southern_minor\\Forecast_Det_early_dry_spell_southern_minor_2025_regridded.nc",
     "data_mtime_ns": 1777616080232327900,
     "data_size": 2616,
     "require_standard_grid_coverage": true,
@@ -38,5 +38,5 @@
     "standard_grid_coverage_tolerance_degrees": 0.35,
     "standard_grid_resolution_degrees": 0.4
   },
-  "manifest_path": "C:\\Users\\CRAFT\\Desktop\\future MEST projects\\Backend\\cumulus\\backend\\data\\artifacts\\forecast_products\\early_dry_spell\\deterministic\\southern_minor\\active.json"
+  "manifest_path": "data\\artifacts\\forecast_products\\early_dry_spell\\deterministic\\southern_minor\\active.json"
 }

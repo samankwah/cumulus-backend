@@ -354,6 +354,13 @@ def test_open_product_dataset_uses_scipy_for_classic_netcdf(monkeypatch, tmp_pat
     assert engines == ["scipy"]
 
 
+def test_committed_forecast_artifacts_are_classic_netcdf():
+    headers = {path: path.read_bytes()[:4] for path in REPO_FORECAST_ARTIFACT_DIR.rglob("*.nc")}
+
+    assert headers
+    assert all(header.startswith(b"CDF") for header in headers.values())
+
+
 def test_forecast_products_resolve_manifests_with_stale_absolute_artifact_paths(monkeypatch, tmp_path):
     artifact_dir = _configure_forecast_artifacts(monkeypatch, tmp_path)
     _rewrite_manifest_paths_to_missing_windows_root(artifact_dir)

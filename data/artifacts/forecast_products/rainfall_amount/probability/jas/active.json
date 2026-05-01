@@ -11,7 +11,7 @@
   "source_run_id": "rainfall_amount_probability_jas_2026_20260501T062209Z",
   "generation_backend": "bridge_generated_regridded_final_netcdf",
   "source_artifact_type": "final_netcdf",
-  "source_path": "C:\\Users\\CRAFT\\Desktop\\future MEST projects\\Backend\\cumulus\\backend\\data\\artifacts\\forecast_products\\rainfall_amount\\probability\\jas\\Forecast_Prob_PRCPJulAugSep_2026.nc",
+  "source_path": "data\\artifacts\\forecast_products\\rainfall_amount\\probability\\jas\\Forecast_Prob_PRCPJulAugSep_2026.nc",
   "promotion_source_product_id": "rainfall_amount_probability_jas_2026_20260428T201221Z",
   "promotion_source_generation_backend": "bridge_generated_final_netcdf",
   "promotion_source_artifact_type": "final_netcdf",
@@ -19,8 +19,8 @@
   "promotion_grid_resolution_degrees": 0.4,
   "refresh_interval_seconds": 1800,
   "freshness_threshold_hours": 18,
-  "data_path": "C:\\Users\\CRAFT\\Desktop\\future MEST projects\\Backend\\cumulus\\backend\\data\\artifacts\\forecast_products\\rainfall_amount\\probability\\jas\\Forecast_Prob_rainfall_amount_jas_2026_regridded.nc",
-  "preview_path": "C:\\Users\\CRAFT\\Desktop\\future MEST projects\\Backend\\cumulus\\backend\\data\\artifacts\\forecast_products\\rainfall_amount\\probability\\jas\\preview.png",
+  "data_path": "data\\artifacts\\forecast_products\\rainfall_amount\\probability\\jas\\Forecast_Prob_rainfall_amount_jas_2026_regridded.nc",
+  "preview_path": "data\\artifacts\\forecast_products\\rainfall_amount\\probability\\jas\\preview.png",
   "app_ready_validation": {
     "app_ready": true,
     "validation_version": 4,
@@ -29,7 +29,7 @@
     "view_mode": "probability",
     "season_profile": null,
     "subseason": "JAS",
-    "data_path": "C:\\Users\\CRAFT\\Desktop\\future MEST projects\\Backend\\cumulus\\backend\\data\\artifacts\\forecast_products\\rainfall_amount\\probability\\jas\\Forecast_Prob_rainfall_amount_jas_2026_regridded.nc",
+    "data_path": "data\\artifacts\\forecast_products\\rainfall_amount\\probability\\jas\\Forecast_Prob_rainfall_amount_jas_2026_regridded.nc",
     "data_mtime_ns": 1777616529401847200,
     "data_size": 8544,
     "require_standard_grid_coverage": true,
@@ -38,5 +38,5 @@
     "standard_grid_coverage_tolerance_degrees": 0.35,
     "standard_grid_resolution_degrees": 0.4
   },
-  "manifest_path": "C:\\Users\\CRAFT\\Desktop\\future MEST projects\\Backend\\cumulus\\backend\\data\\artifacts\\forecast_products\\rainfall_amount\\probability\\jas\\active.json"
+  "manifest_path": "data\\artifacts\\forecast_products\\rainfall_amount\\probability\\jas\\active.json"
 }

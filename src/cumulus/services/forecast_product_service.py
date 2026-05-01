@@ -608,7 +608,10 @@ def list_supported_product_themes(settings: Settings) -> list[dict[str, Any]]:
         snapshot_items = _read_product_options_snapshot(settings, active_manifest_fingerprint)
         items = snapshot_items if snapshot_items is not None else _build_supported_product_themes(settings)
         if snapshot_items is None:
-            _write_product_options_snapshot(settings, items, active_manifest_fingerprint=active_manifest_fingerprint)
+            try:
+                _write_product_options_snapshot(settings, items, active_manifest_fingerprint=active_manifest_fingerprint)
+            except OSError:
+                pass
         _PRODUCT_OPTIONS_CACHE["payload"] = {
             "cache_key": cache_key,
             "expires_at": now + _PRODUCT_OPTIONS_CACHE_SECONDS,

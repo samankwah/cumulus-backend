@@ -508,6 +508,23 @@ def test_forecast_product_options_cache_invalidates_when_active_manifest_changes
     assert rainy_days["subseasons"] == ["MAM", "AMJ"]
 
 
+def test_forecast_product_options_ignore_snapshot_write_failures(monkeypatch, tmp_path):
+    _configure_forecast_artifacts(monkeypatch, tmp_path)
+    forecast_product_service._clear_forecast_product_caches()
+
+    def fail_snapshot_write(*args, **kwargs):
+        raise OSError("read-only deployment")
+
+    monkeypatch.setattr(forecast_product_service, "_write_product_options_snapshot", fail_snapshot_write)
+    client = TestClient(app)
+
+    response = client.get("/forecast/products/options")
+
+    assert response.status_code == 200
+    onset = next(item for item in response.json() if item["theme"] == "onset")
+    assert onset["enabled"] is True
+
+
 def test_forecast_product_options_ignore_stale_snapshot_missing_ready_season(monkeypatch, tmp_path):
     artifact_dir = tmp_path / "forecast-products"
     product_dir = tmp_path / "products"

@@ -3,6 +3,10 @@ build/
 src/cumulus.egg-info/
 **/__pycache__/
 *.pyc
+.venv/
+.env
+data/processed/
+data/raw/
 data/artifacts/nationwide/*
 !data/artifacts/nationwide/.gitkeep
 data/artifacts/seasonal_map/*

@@ -5,16 +5,15 @@ param(
 $ErrorActionPreference = "Stop"
 
 $backendRoot = Split-Path -Parent $PSScriptRoot
-$workspaceRoot = Split-Path -Parent $backendRoot
-$localDevScript = Join-Path $workspaceRoot "scripts\local-dev.ps1"
+$localDevScript = Join-Path $PSScriptRoot "local-dev.ps1"
 
 . $localDevScript
 
 Assert-CumulusPortAvailable -Port 8000 -Role backend -ForceRestart:$ForceRestart
 
 $defaultForecastPath = Join-Path $backendRoot "data\sample_forecast_smoke.nc"
-$era5ManifestPath = Join-Path $workspaceRoot "ml\data\raw\era5\manifest.json"
-$gfsManifestPath = Join-Path $workspaceRoot "ml\data\raw\gfs\manifest.json"
+$era5ManifestPath = Join-Path $backendRoot "data\raw\era5\manifest.json"
+$gfsManifestPath = Join-Path $backendRoot "data\raw\gfs\manifest.json"
 $hasDownloadedSource = (Test-Path $era5ManifestPath) -or (Test-Path $gfsManifestPath)
 $pythonPath = Get-CumulusCommandPath -Name "python"
 
@@ -37,7 +36,7 @@ if ($env:CUMULUS_ERA5_FORECAST_PATH) {
 } elseif ($env:CUMULUS_GFS_FORECAST_PATH) {
   $forecastSource = "GFS: $env:CUMULUS_GFS_FORECAST_PATH"
 } elseif ($hasDownloadedSource -and -not $env:CUMULUS_UPSTREAM_FORECAST_PATH) {
-  $forecastSource = "auto-discovered from ml/data/raw manifests"
+  $forecastSource = "auto-discovered from data/raw manifests"
 }
 
 Write-Host "Starting Cumulus backend on http://127.0.0.1:8000"

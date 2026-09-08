@@ -22,21 +22,17 @@ from cumulus.utils.io import ensure_directory, load_yaml
 
 
 BACKEND_ROOT = Path(__file__).resolve().parents[2]
-WORKSPACE_ROOT = BACKEND_ROOT.parent
-ML_ROOT = WORKSPACE_ROOT / "ml"
 DEFAULT_CONFIG_DIR = BACKEND_ROOT / "configs"
-DEFAULT_DATA_DIR = ML_ROOT / "data"
+# The backend was split out of a monorepo that kept ML inputs under ../ml/data. It
+# is now self-contained: data and artifacts live inside this repo. Override the
+# root with CUMULUS_DATA_DIR.
+DEFAULT_DATA_DIR = BACKEND_ROOT / "data"
 DEFAULT_SERVERLESS_DATA_DIR = Path(tempfile.gettempdir()) / "cumulus"
 DEFAULT_NATIONWIDE_ARTIFACT_DIR = BACKEND_ROOT / "data" / "artifacts" / "nationwide"
 DEFAULT_SEASONAL_MAP_ARTIFACT_DIR = BACKEND_ROOT / "data" / "artifacts" / "seasonal_map"
 DEFAULT_FORECAST_PRODUCT_ARTIFACT_DIR = BACKEND_ROOT / "data" / "artifacts" / "forecast_products"
 DEFAULT_BACKEND_DISTRICT_GEOJSON_PATH = BACKEND_ROOT / "data" / "ghana_district_polygons_simplified.geojson"
-DEFAULT_WORKSPACE_DISTRICT_GEOJSON_PATH = WORKSPACE_ROOT / "frontend" / "public" / "data" / "ghana_district_polygons_simplified.geojson"
-DEFAULT_DISTRICT_GEOJSON_PATH = (
-    DEFAULT_BACKEND_DISTRICT_GEOJSON_PATH
-    if DEFAULT_BACKEND_DISTRICT_GEOJSON_PATH.exists()
-    else DEFAULT_WORKSPACE_DISTRICT_GEOJSON_PATH
-)
+DEFAULT_DISTRICT_GEOJSON_PATH = DEFAULT_BACKEND_DISTRICT_GEOJSON_PATH
 DEFAULT_WASS2S_2026_ROOT = Path.home() / "Desktop" / "MEST_projects" / "wass2s" / "Agro_PRESAGG_2026_ic_1"
 DEFAULT_FORECAST_PRODUCT_SOURCE_DIR = DEFAULT_WASS2S_2026_ROOT / "forecasts"
 DEFAULT_FORECAST_PRODUCT_DAILY_CORRECTED_DIR = DEFAULT_WASS2S_2026_ROOT / "daily_model_data" / "corrected"

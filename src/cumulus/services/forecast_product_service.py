@@ -11,11 +11,9 @@ import math
 from pathlib import Path
 import re
 import shutil
-import struct
 from threading import RLock
 from typing import Any, Literal
 from urllib.parse import urlencode
-import zlib
 
 import numpy as np
 import pandas as pd
@@ -29,6 +27,9 @@ from cumulus.api.errors import (
 )
 from cumulus.settings import ForecastProductPairSourceConfig, ForecastProductSourceConfig, SeasonalProfileConfig, Settings
 from cumulus.utils.io import ensure_directory
+from cumulus.utils.tiles import encode_png as _encode_png
+from cumulus.utils.tiles import tile_pixel_latitudes as _tile_pixel_latitudes
+from cumulus.utils.tiles import tile_pixel_longitudes as _tile_pixel_longitudes
 
 TILE_SIZE = 256
 TILE_GEOMETRY_MASK_SIZE = 64
@@ -5078,15 +5079,8 @@ def _nearest_indices(axis_values: np.ndarray, sample_values: np.ndarray) -> tupl
     return ordered_indices[nearest_positions].astype(int), inside
 
 
-def _tile_pixel_longitudes(z: int, x: int) -> np.ndarray:
-    pixel_positions = (np.arange(TILE_SIZE, dtype=float) + 0.5) / TILE_SIZE
-    return ((x + pixel_positions) / (2**z)) * 360.0 - 180.0
 
 
-def _tile_pixel_latitudes(z: int, y: int) -> np.ndarray:
-    pixel_positions = (np.arange(TILE_SIZE, dtype=float) + 0.5) / TILE_SIZE
-    mercator = math.pi * (1 - 2 * ((y + pixel_positions) / (2**z)))
-    return np.degrees(np.arctan(np.sinh(mercator)))
 
 
 def _nearest_sample_probability_grid(
@@ -5260,32 +5254,4 @@ def _interpolate_color_channels(
         np.interp(safe_normalized, stops, reds).astype(np.uint8),
         np.interp(safe_normalized, stops, greens).astype(np.uint8),
         np.interp(safe_normalized, stops, blues).astype(np.uint8),
-    )
-
-
-def _encode_png(rgba: np.ndarray) -> bytes:
-    height, width, channels = rgba.shape
-    if channels != 4:
-        raise ValueError("PNG encoder expects an RGBA array.")
-    raw = b"".join(b"\x00" + rgba[row_index].tobytes() for row_index in range(height))
-    compressed = zlib.compress(raw, level=6)
-    header = struct.pack("!2I5B", width, height, 8, 6, 0, 0, 0)
-    return b"".join(
-        [
-            b"\x89PNG\r\n\x1a\n",
-            _png_chunk(b"IHDR", header),
-            _png_chunk(b"IDAT", compressed),
-            _png_chunk(b"IEND", b""),
-        ]
-    )
-
-
-def _png_chunk(chunk_type: bytes, payload: bytes) -> bytes:
-    return b"".join(
-        [
-            struct.pack("!I", len(payload)),
-            chunk_type,
-            payload,
-            struct.pack("!I", zlib.crc32(chunk_type + payload) & 0xFFFFFFFF),
-        ]
     )

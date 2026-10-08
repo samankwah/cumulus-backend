@@ -31,6 +31,7 @@ DEFAULT_SERVERLESS_DATA_DIR = Path(tempfile.gettempdir()) / "cumulus"
 DEFAULT_NATIONWIDE_ARTIFACT_DIR = BACKEND_ROOT / "data" / "artifacts" / "nationwide"
 DEFAULT_SEASONAL_MAP_ARTIFACT_DIR = BACKEND_ROOT / "data" / "artifacts" / "seasonal_map"
 DEFAULT_FORECAST_PRODUCT_ARTIFACT_DIR = BACKEND_ROOT / "data" / "artifacts" / "forecast_products"
+DEFAULT_SUBSEASONAL_ARTIFACT_DIR = BACKEND_ROOT / "data" / "artifacts" / "subseasonal"
 DEFAULT_BACKEND_DISTRICT_GEOJSON_PATH = BACKEND_ROOT / "data" / "ghana_district_polygons_simplified.geojson"
 DEFAULT_DISTRICT_GEOJSON_PATH = DEFAULT_BACKEND_DISTRICT_GEOJSON_PATH
 DEFAULT_WASS2S_2026_ROOT = Path.home() / "Desktop" / "MEST_projects" / "wass2s" / "Agro_PRESAGG_2026_ic_1"
@@ -307,6 +308,34 @@ class ForecastProductConfig(BaseModel):
     )
 
 
+class SubseasonalBoundsConfig(BaseModel):
+    """Ghana plus a 0.5 degree buffer, so tiles and bilinear sampling stay valid at the border."""
+
+    latitude_min: float = 4.0
+    latitude_max: float = 12.0
+    longitude_min: float = -4.0
+    longitude_max: float = 2.0
+
+
+class SubseasonalConfig(BaseModel):
+    artifact_dir: Path = DEFAULT_SUBSEASONAL_ARTIFACT_DIR
+    source_id: str = "ifs_unet"
+    source_label: str = "ECMWF IFS · UNet downscaled"
+    model_label: str = "IFS-UNet"
+    variable_aliases: list[str] = Field(default_factory=lambda: ["precip_24h", "precip_mm", "tp", "precip", "precipitation"])
+    bounds: SubseasonalBoundsConfig = Field(default_factory=SubseasonalBoundsConfig)
+    wet_day_threshold_mm: float = 1.0
+    dry_spell_min_days: int = 5
+    wet_spell_min_days: int = 3
+    min_lead_days: int = 7
+    retention_runs: int = 3
+    stale_after_days: int = 3
+    raw_cache_dir: Path | None = None
+    local_source_dir: Path | None = None
+    azure_sas_url: str | None = None
+    azure_prefix: str = "Unet/"
+
+
 class ModelParamsConfig(BaseModel):
     n_estimators: int = 300
     max_depth: int | None = 16
@@ -365,6 +394,7 @@ class Settings(BaseSettings):
     nationwide: NationwideConfig = Field(default_factory=NationwideConfig)
     seasonal_map: SeasonalMapConfig = Field(default_factory=SeasonalMapConfig)
     forecast_products: ForecastProductConfig = Field(default_factory=ForecastProductConfig)
+    subseasonal: SubseasonalConfig = Field(default_factory=SubseasonalConfig)
 
     @field_validator("cors_allowed_origins", mode="before")
     @classmethod

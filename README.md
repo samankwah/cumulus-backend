@@ -60,6 +60,49 @@ paths default to locations inside this repo:
 | `CUMULUS_DEFAULT_STATION_PATH` | `data/raw/stations/Rainfall_data.xlsx` | station workbook, only used by `POST /train` |
 | `CUMULUS_CORS_ALLOWED_ORIGINS` | localhost:3000 + deployed frontend | extra allowed browser origins (comma-separated) |
 
+## Sub-seasonal rainfall (IFS-UNet, 46 days)
+
+The frontend's default "Next 46 days" view is served from ECMWF IFS extended-range runs
+downscaled to 0.1° with a UNet. Upstream delivers one NetCDF4/HDF5 file per lead day
+(`Unet/YYYY-MM-DD/YYYY-MM-DD-00-LLLL.nc`, variable `precip_24h`, Africa-wide, ~53 MB per run).
+The API never reads those directly: an offline **ingest** turns each run into a compact
+Ghana artifact (NetCDF3, int16 at 0.1 mm, ~0.45 MB) that is committed under
+`data/artifacts/subseasonal/ifs_unet/<run_id>/`, with `active.json` pointing at the newest run.
+
+```powershell
+pip install -e ".[ingest]"     # adds h5netcdf + h5py; not needed to serve the API
+
+# from a local folder holding YYYY-MM-DD run folders
+python -m cumulus.subseasonal.ingest --source local --path D:\data\Unet --latest
+
+# from Azure Blob Storage (container SAS URL with Read + List)
+$env:CUMULUS_SUBSEASONAL__AZURE_SAS_URL = "https://<account>.blob.core.windows.net/<container>?<sas>"
+python -m cumulus.subseasonal.ingest --source azure --list
+python -m cumulus.subseasonal.ingest --source azure --latest
+```
+
+Ingest clips the small negative values the UNet produces, keeps Ghana + 0.5°, validates the
+init time, grid and contiguous lead days (at least 7), and keeps the newest 3 runs. The
+`Ingest IFS-UNet run` GitHub workflow does this daily once the `IFS_UNET_SAS_URL` repository
+secret is set.
+
+Lead day *d* holds rain accumulated from init + (d-1)·24 h to init + d·24 h, so for a 00 UTC
+run day 1 is the init date itself (Ghana is on UTC). Outlook layers use the thresholds in
+`configs/base.yaml` (`subseasonal:`): a wet day is ≥ 1 mm, a dry spell is ≥ 5 consecutive
+days below that, a wet spell is ≥ 3 consecutive wet days; "spell days" count the days that
+fall inside such spells.
+
+| Endpoint | Purpose |
+| --- | --- |
+| `GET /subseasonal/runs` | runs, init time, staleness, national daily/weekly means |
+| `GET /subseasonal/layer` | legend, title, stats and tile URL for `layer` × `aggregation` × `index` |
+| `GET /subseasonal/tiles/{z}/{x}/{y}.png` | map tiles (immutable when `run_id` is given) |
+| `GET /subseasonal/area-values` | area mean of the current layer for every region or district |
+| `GET /subseasonal/sample` / `GET /subseasonal/area` | 46-day series, weekly totals, spells for a point or area |
+
+Layers: `rainfall` (`daily` / `weekly` / `total`), `rainy_days`, `dry_spell_days`,
+`wet_spell_days`. Area means are area-weighted using district polygons rasterised at 0.01°.
+
 ## Tests
 
 ```powershell
@@ -75,7 +118,8 @@ data/                   committed forecast products, district geojson, sample fo
 src/cumulus/
   main.py               FastAPI app factory
   settings.py           pydantic-settings configuration
-  api/                  route modules (health, forecast, nationwide, seasonal_map, advisory, training)
+  api/                  route modules (health, forecast, subseasonal, nationwide, seasonal_map, advisory, training)
+  subseasonal/          IFS-UNet ingest (Azure/local sources), district rasteriser, spell metrics, legends
   services/             business logic
   data/ modeling/ ...   loaders, trainer/predictor, advisory rule engines
 scripts/                start-backend-local.ps1, local-dev.ps1, batch/refresh utilities

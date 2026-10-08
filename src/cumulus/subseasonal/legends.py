@@ -30,6 +30,7 @@ class Legend:
     note: str | None = None
     below_min_transparent: bool = False
     opacity: int = 222  # PNG alpha for coloured pixels
+    categorical: bool = False  # bins are named classes, not numeric ranges
 
 
 def _bins(edges: list[float], colors: list[str], unit: str, *, first_label: str | None = None) -> tuple[LegendBin, ...]:
@@ -120,6 +121,63 @@ WET_SPELL_DAYS = Legend(
 )
 
 
+# Per-day indicator maps: each cell is 100 (the day is a rain day / inside a spell) or 0, so an
+# area mean reads as the share of the area. Only the flagged class is shaded.
+RAINY_DAY_DAILY = Legend(
+    key="rainy_day_daily",
+    unit="%",
+    bins=(LegendBin(lower=50, upper=None, color="#2f96d4", label="Rain day"),),
+    note="Dry days not shaded",
+    below_min_transparent=True,
+    categorical=True,
+)
+
+DRY_SPELL_DAILY = Legend(
+    key="dry_spell_daily",
+    unit="%",
+    bins=(LegendBin(lower=50, upper=None, color="#de7d2c", label="In a dry spell"),),
+    note="Days outside a dry spell not shaded",
+    below_min_transparent=True,
+    categorical=True,
+)
+
+WET_SPELL_DAILY = Legend(
+    key="wet_spell_daily",
+    unit="%",
+    bins=(LegendBin(lower=50, upper=None, color="#3aa894", label="In a wet spell"),),
+    note="Days outside a wet spell not shaded",
+    below_min_transparent=True,
+    categorical=True,
+)
+
+# Per-week counts (0-7 days; the last window may be shorter). Same ramps as the outlook totals.
+_WEEK_DAYS = [1, 2, 3, 4, 5, 6, 7]
+
+RAINY_DAYS_WEEKLY = Legend(
+    key="rainy_days_weekly",
+    unit="days",
+    bins=_bins(_WEEK_DAYS, ["#cfeefa", "#9bd9f2", "#5cbbe6", "#2f96d4", "#2a6fc0", "#3e4ca8", "#5a2f97"], "days"),
+    note="Weeks without a rain day not shaded",
+    below_min_transparent=True,
+)
+
+DRY_SPELL_DAYS_WEEKLY = Legend(
+    key="dry_spell_days_weekly",
+    unit="days",
+    bins=_bins(_WEEK_DAYS, ["#fbe7a6", "#f8cf6a", "#f0a945", "#de7d2c", "#c0531f", "#95361a", "#6b2214"], "days"),
+    note="Weeks without dry-spell days not shaded",
+    below_min_transparent=True,
+)
+
+WET_SPELL_DAYS_WEEKLY = Legend(
+    key="wet_spell_days_weekly",
+    unit="days",
+    bins=_bins(_WEEK_DAYS, ["#d4f0e3", "#a3dfc8", "#6cc7ac", "#3aa894", "#1f8580", "#14636a", "#0d4352"], "days"),
+    note="Weeks without wet-spell days not shaded",
+    below_min_transparent=True,
+)
+
+
 def classify(values: np.ndarray, legend: Legend) -> np.ndarray:
     """Bin index per value; -1 for NaN or (when transparent) below the first edge."""
     lowers = np.asarray([item.lower for item in legend.bins], dtype=float)
@@ -140,6 +198,7 @@ def legend_payload(legend: Legend) -> dict[str, object]:
         "key": legend.key,
         "unit": legend.unit,
         "note": legend.note,
+        "categorical": legend.categorical,
         "bins": [
             {"min": item.lower, "max": item.upper, "color": item.color, "label": item.label}
             for item in legend.bins

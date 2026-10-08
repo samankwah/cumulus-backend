@@ -43,28 +43,35 @@ LAYERS: dict[str, dict[str, Any]] = {
         "description": "Forecast rainfall accumulation.",
         "aggregations": ["daily", "weekly", "total"],
     },
+    # Indicators default to the whole window ("total" first) for callers that omit the period.
     "rainy_days": {
         "label": "Rainy days",
-        "description": "Days with at least {wet} mm over the forecast window.",
-        "aggregations": ["total"],
+        "description": "Days with at least {wet} mm of rain.",
+        "aggregations": ["total", "daily", "weekly"],
     },
     "dry_spell_days": {
         "label": "Dry-spell days",
         "description": "Days falling inside dry spells (≥{dry} consecutive days below {wet} mm).",
-        "aggregations": ["total"],
+        "aggregations": ["total", "daily", "weekly"],
     },
     "wet_spell_days": {
         "label": "Wet-spell days",
         "description": "Days falling inside wet spells (≥{wetspell} consecutive days with ≥{wet} mm).",
-        "aggregations": ["total"],
+        "aggregations": ["total", "daily", "weekly"],
     },
 }
 LAYER_LEGENDS = {
     ("rainfall", "daily"): legends.RAIN_DAILY,
     ("rainfall", "weekly"): legends.RAIN_WEEKLY,
     ("rainfall", "total"): legends.RAIN_TOTAL,
+    ("rainy_days", "daily"): legends.RAINY_DAY_DAILY,
+    ("rainy_days", "weekly"): legends.RAINY_DAYS_WEEKLY,
     ("rainy_days", "total"): legends.RAINY_DAYS,
+    ("dry_spell_days", "daily"): legends.DRY_SPELL_DAILY,
+    ("dry_spell_days", "weekly"): legends.DRY_SPELL_DAYS_WEEKLY,
     ("dry_spell_days", "total"): legends.DRY_SPELL_DAYS,
+    ("wet_spell_days", "daily"): legends.WET_SPELL_DAILY,
+    ("wet_spell_days", "weekly"): legends.WET_SPELL_DAYS_WEEKLY,
     ("wet_spell_days", "total"): legends.WET_SPELL_DAYS,
 }
 GUIDANCE = (
@@ -92,6 +99,9 @@ class PreparedRun:
     windows: list[metrics.Window] = field(default_factory=list)
     weekly: np.ndarray | None = None
     outlook: dict[str, np.ndarray] = field(default_factory=dict)
+    # Per indicator: (day, lat, lon) 100/0 flags and (week, lat, lon) day counts.
+    indicator_daily: dict[str, np.ndarray] = field(default_factory=dict)
+    indicator_weekly: dict[str, np.ndarray] = field(default_factory=dict)
     land_weights: np.ndarray | None = None
     area_matrices: dict[str, tuple[tuple[str, ...], np.ndarray]] = field(default_factory=dict)
     tile_cache: OrderedDict[tuple[Any, ...], bytes] = field(default_factory=OrderedDict)
@@ -187,6 +197,13 @@ def _load_run_cached(
             wet_spell_min_days=wet_spell_min_days,
         ).items()
     }
+    run.indicator_daily, run.indicator_weekly = _indicator_fields(
+        daily,
+        run.windows,
+        wet_threshold_mm=wet_threshold_mm,
+        dry_spell_min_days=dry_spell_min_days,
+        wet_spell_min_days=wet_spell_min_days,
+    )
     land = areas.cell_land_fraction().astype(np.float32)
     run.land_weights = land
     for level in ("region", "district"):
@@ -195,6 +212,37 @@ def _load_run_cached(
         matrix = np.stack([weights[name].ravel() for name in names]).astype(np.float32) if names else np.zeros((0, land.size), np.float32)
         run.area_matrices[level] = (names, matrix)
     return run
+
+
+def _indicator_fields(
+    daily: np.ndarray,
+    windows: list[metrics.Window],
+    *,
+    wet_threshold_mm: float,
+    dry_spell_min_days: int,
+    wet_spell_min_days: int,
+) -> tuple[dict[str, np.ndarray], dict[str, np.ndarray]]:
+    """Daily flags and weekly counts per indicator, consistent with the whole-window outlook.
+
+    Spells are found over the full run, so a week's dry-spell days are the days of that week
+    that belong to a spell (which may start or end outside the week), and the weekly counts
+    add up to the outlook total.
+    """
+    wet = metrics.wet_mask(daily, wet_threshold_mm)
+    dry = metrics.dry_mask(daily, wet_threshold_mm)
+    flags = {
+        "rainy_days": wet,
+        "dry_spell_days": metrics.spell_day_mask(dry, dry_spell_min_days),
+        "wet_spell_days": metrics.spell_day_mask(wet, wet_spell_min_days),
+    }
+    missing = np.isnan(daily)
+    per_day: dict[str, np.ndarray] = {}
+    per_week: dict[str, np.ndarray] = {}
+    for key, flag in flags.items():
+        counts = np.where(missing, np.nan, flag.astype(np.float32))
+        per_day[key] = (counts * 100).astype(np.float32)
+        per_week[key] = metrics.window_sums(counts, windows).astype(np.float32)
+    return per_day, per_week
 
 
 # --------------------------------------------------------------------------- run summaries
@@ -291,6 +339,10 @@ def layer_field(run: PreparedRun, selection: LayerSelection) -> np.ndarray:
             assert run.weekly is not None
             return run.weekly[selection.index - 1]
         return run.outlook["total"]
+    if selection.aggregation == "daily":
+        return run.indicator_daily[selection.layer][selection.index - 1]
+    if selection.aggregation == "weekly":
+        return run.indicator_weekly[selection.layer][selection.index - 1]
     return run.outlook[selection.layer]
 
 

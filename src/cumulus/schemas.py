@@ -747,6 +747,7 @@ class SubseasonalLegend(BaseModel):
     key: str
     unit: str
     note: str | None = None
+    categorical: bool = False
     bins: list[SubseasonalLegendBin]
 
 

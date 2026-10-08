@@ -316,6 +316,40 @@ def test_outlook_layers_and_area_values(client):
     assert len(values) >= 259 and values["Tamale"] == pytest.approx(5.0)
 
 
+def test_indicator_layers_support_daily_and_weekly_periods(client):
+    layers = {item["layer"]: item for item in client.get("/subseasonal/runs").json()["runs"][0]["layers"]}
+    assert set(layers["dry_spell_days"]["aggregations"]) == {"daily", "weekly", "total"}
+
+    def stats(layer, aggregation, index=None):
+        params = {"layer": layer, "aggregation": aggregation}
+        if index is not None:
+            params["index"] = index
+        response = client.get("/subseasonal/layer", params=params)
+        assert response.status_code == 200
+        return response.json()
+
+    # Dry run on days 4-9: week 1 holds days 4-7, week 2 days 8-9; the weeks add up to the total.
+    week1, week2 = stats("dry_spell_days", "weekly", 1), stats("dry_spell_days", "weekly", 2)
+    assert week1["stats"]["min"] == week1["stats"]["max"] == 4
+    assert week2["stats"]["min"] == week2["stats"]["max"] == 2
+    assert week1["legend"]["unit"] == "days" and week1["legend"]["categorical"] is False
+
+    # Daily maps flag each cell 100 (in the spell / a rain day) or 0.
+    in_spell, before_spell = stats("dry_spell_days", "daily", 5), stats("dry_spell_days", "daily", 1)
+    assert in_spell["stats"]["min"] == 100 and before_spell["stats"]["max"] == 0
+    assert in_spell["legend"]["categorical"] is True and in_spell["legend"]["bins"][0]["label"] == "In a dry spell"
+    assert stats("wet_spell_days", "daily", 2)["stats"]["min"] == 100
+    assert stats("rainy_days", "weekly", 1)["stats"]["min"] == 3
+
+    share = client.get(
+        "/subseasonal/area-values", params={"level": "region", "layer": "dry_spell_days", "aggregation": "daily", "index": 5}
+    ).json()
+    assert share["unit"] == "%" and share["values"]["Northern"] == pytest.approx(100)
+
+    # Omitting the period keeps the whole-window view for indicators.
+    assert client.get("/subseasonal/layer", params={"layer": "rainy_days"}).json()["aggregation"] == "total"
+
+
 def test_point_and_area_series(client):
     point = client.get("/subseasonal/sample", params={"latitude": 5.6, "longitude": -0.2}).json()
     assert point["inside_ghana"] and point["region"] == "Greater Accra"
@@ -331,7 +365,7 @@ def test_point_and_area_series(client):
 def test_subseasonal_errors_are_structured(client):
     assert client.get("/subseasonal/layer", params={"layer": "humidity"}).json()["error_code"] == "invalid_subseasonal_layer"
     assert client.get("/subseasonal/layer", params={"aggregation": "daily", "index": 15}).status_code == 422
-    assert client.get("/subseasonal/layer", params={"layer": "rainy_days", "aggregation": "daily"}).status_code == 422
+    assert client.get("/subseasonal/layer", params={"layer": "rainy_days", "aggregation": "monthly"}).status_code == 422
     assert client.get("/subseasonal/layer", params={"run_id": "missing"}).json()["error_code"] == "subseasonal_run_not_found"
     assert client.get("/subseasonal/area", params={"level": "district", "name": "Atlantis"}).status_code == 404
     assert client.get("/subseasonal/sample", params={"latitude": 20, "longitude": 0}).json()["error_code"] == "invalid_coordinates"

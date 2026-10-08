@@ -125,3 +125,14 @@ forecast_products:
         probability_path: E:/obj_files/Forecast_Prob_PRCPJulAugSep_2026.nc
         forecast_year: 2026
         title: Seasonal Rainfall Total
+subseasonal:
+  # ECMWF IFS extended-range runs downscaled with a UNet (deterministic, 46 daily leads).
+  source_id: ifs_unet
+  model_label: IFS-UNet
+  wet_day_threshold_mm: 1.0
+  dry_spell_min_days: 5
+  wet_spell_min_days: 3
+  min_lead_days: 7
+  retention_runs: 3
+  stale_after_days: 3
+  azure_prefix: Unet/

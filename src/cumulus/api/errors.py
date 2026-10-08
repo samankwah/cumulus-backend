@@ -110,6 +110,26 @@ class InvalidSubseasonForProfileError(CumulusServiceError):
     error_code = "invalid_subseason_for_profile"
 
 
+class SubseasonalRunNotAvailableError(CumulusServiceError):
+    status_code = 503
+    error_code = "subseasonal_run_not_available"
+
+
+class SubseasonalRunNotFoundError(CumulusServiceError):
+    status_code = 404
+    error_code = "subseasonal_run_not_found"
+
+
+class InvalidSubseasonalLayerError(CumulusServiceError):
+    status_code = 422
+    error_code = "invalid_subseasonal_layer"
+
+
+class SubseasonalAreaNotFoundError(CumulusServiceError):
+    status_code = 404
+    error_code = "subseasonal_area_not_found"
+
+
 def install_exception_handlers(app: FastAPI) -> None:
     @app.exception_handler(CumulusServiceError)
     async def _service_error_handler(_: Request, exc: CumulusServiceError) -> JSONResponse:

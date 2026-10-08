@@ -666,3 +666,167 @@ class HealthResponse(SchemaModel):
     station_path: str | None = None
     station_path_exists: bool | None = None
     data_sources: dict[str, Any] = Field(default_factory=dict)
+
+
+# --------------------------------------------------------------------------- sub-seasonal (IFS-UNet)
+
+
+class SubseasonalThresholds(BaseModel):
+    wet_day_mm: float
+    dry_spell_min_days: int
+    wet_spell_min_days: int
+
+
+class SubseasonalDay(BaseModel):
+    day: int
+    date: date
+    period_start: datetime
+    period_end: datetime
+    value: float | None = None
+    wet: bool | None = None
+    spell: str | None = None
+
+
+class SubseasonalWeek(BaseModel):
+    week: int
+    start_day: int
+    end_day: int
+    start_date: date
+    end_date: date
+    days: int
+    partial: bool
+    value: float | None = None
+
+
+class SubseasonalLayerOption(BaseModel):
+    layer: str
+    label: str
+    description: str
+    aggregations: list[str]
+
+
+class SubseasonalRunResponse(BaseModel):
+    run_id: str
+    active: bool
+    source_id: str
+    source_label: str
+    model_label: str
+    ensemble: str
+    init_time: datetime
+    ingested_at: datetime | None = None
+    lead_days: int
+    expected_lead_days: int
+    missing_lead_days: list[int]
+    first_day: date
+    last_day: date
+    age_days: int
+    is_stale: bool
+    unit: str
+    grid_resolution_degrees: float | None = None
+    bounds: dict[str, float] | None = None
+    thresholds: SubseasonalThresholds
+    days: list[SubseasonalDay]
+    weeks: list[SubseasonalWeek]
+    layers: list[SubseasonalLayerOption]
+    guidance: str
+
+
+class SubseasonalRunsResponse(BaseModel):
+    active_run_id: str
+    runs: list[SubseasonalRunResponse]
+
+
+class SubseasonalLegendBin(BaseModel):
+    min: float
+    max: float | None = None
+    color: str
+    label: str
+
+
+class SubseasonalLegend(BaseModel):
+    key: str
+    unit: str
+    note: str | None = None
+    bins: list[SubseasonalLegendBin]
+
+
+class SubseasonalLayerStats(BaseModel):
+    mean: float | None = None
+    max: float | None = None
+    min: float | None = None
+
+
+class SubseasonalLayerResponse(BaseModel):
+    run_id: str
+    layer: str
+    layer_label: str
+    aggregation: str
+    index: int
+    index_count: int
+    title: str
+    start_day: int
+    end_day: int
+    start_date: date
+    end_date: date
+    period_start: datetime
+    period_end: datetime
+    unit: str
+    legend: SubseasonalLegend
+    tile_url: str
+    bounds: dict[str, float] | None = None
+    stats: SubseasonalLayerStats
+    description: str
+
+
+class SubseasonalAreaValuesResponse(BaseModel):
+    run_id: str
+    level: str
+    layer: str
+    aggregation: str
+    index: int
+    unit: str
+    values: dict[str, float | None]
+
+
+class SubseasonalMetrics(BaseModel):
+    total_mm: float | None = None
+    rainy_days: int
+    dry_spell_days: int
+    wet_spell_days: int
+    max_day_mm: float | None = None
+    max_day: int | None = None
+
+
+class SubseasonalSpell(BaseModel):
+    kind: str
+    start_day: int
+    end_day: int
+    days: int
+    start_date: date
+    end_date: date
+    open_start: bool
+    open_end: bool
+    total_mm: float | None = None
+
+
+class SubseasonalSeriesResponse(BaseModel):
+    kind: str
+    name: str
+    region: str | None = None
+    district: str | None = None
+    latitude: float | None = None
+    longitude: float | None = None
+    nearest_latitude: float | None = None
+    nearest_longitude: float | None = None
+    inside_ghana: bool
+    cell_count: int
+    support: str
+    run_id: str
+    init_time: datetime
+    unit: str
+    days: list[SubseasonalDay]
+    weeks: list[SubseasonalWeek]
+    metrics: SubseasonalMetrics
+    spells: list[SubseasonalSpell]
+    thresholds: SubseasonalThresholds
+    guidance: str

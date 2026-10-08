@@ -12,6 +12,7 @@ from cumulus.api.routes_forecast import router as forecast_router
 from cumulus.api.routes_health import router as health_router
 from cumulus.api.routes_nationwide import router as nationwide_router
 from cumulus.api.routes_seasonal_map import router as seasonal_map_router
+from cumulus.api.routes_subseasonal import router as subseasonal_router
 from cumulus.api.routes_training import router as training_router
 from cumulus.logging import configure_logging
 from cumulus.settings import get_settings
@@ -32,5 +33,6 @@ app.include_router(training_router)
 app.include_router(forecast_router)
 app.include_router(nationwide_router)
 app.include_router(seasonal_map_router)
+app.include_router(subseasonal_router)
 app.include_router(advisory_router)
 app.include_router(farmer_advisory_router)

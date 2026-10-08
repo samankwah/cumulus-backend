@@ -9,6 +9,7 @@ deficiencies); dry-spell ramps run sand to rust; wet-spell ramps run mint to dee
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import date, timedelta
 import math
 
 import numpy as np
@@ -175,6 +176,54 @@ WET_SPELL_DAYS_WEEKLY = Legend(
     bins=_bins(_WEEK_DAYS, ["#d4f0e3", "#a3dfc8", "#6cc7ac", "#3aa894", "#1f8580", "#14636a", "#0d4352"], "days"),
     note="Weeks without wet-spell days not shaded",
     below_min_transparent=True,
+)
+
+
+# Onset date: early onsets deep green, late ones pale yellow; grey where the window has no onset.
+_ONSET_COLORS = ["#1b5e3b", "#2e7d4f", "#4f9a55", "#7db55a", "#a9c95f", "#d3d96a", "#f1e483"]
+_NO_ONSET_COLOR = "#cfcac0"
+
+
+def onset_legend(init_date: date, day_count: int, week_length: int = 7) -> Legend:
+    """Weekly lead-day classes labelled with their calendar dates; depends on the run, so not fixed.
+
+    Values are lead days (1 = the first forecast day); 0 means no onset inside the forecast.
+    """
+    bins = [LegendBin(lower=0, upper=1, color=_NO_ONSET_COLOR, label="No onset")]
+    starts = list(range(1, day_count + 1, week_length))
+    last = init_date
+    for position, start in enumerate(starts):
+        end = min(start + week_length - 1, day_count)
+        first = init_date + timedelta(days=start - 1)
+        last = init_date + timedelta(days=end - 1)
+        bins.append(
+            LegendBin(
+                lower=start,
+                upper=end + 1 if position + 1 < len(starts) else None,
+                color=_ONSET_COLORS[min(position, len(_ONSET_COLORS) - 1)],
+                label=f"{first.day} {first:%b}–{last.day} {last:%b}",
+            )
+        )
+    return Legend(key="onset", unit="date", bins=tuple(bins), note=f"Grey: no onset by {last.day} {last:%b}")
+
+
+# Onset countdown for one day: started, then how many days until it starts; grey if not in the forecast.
+# Values are (onset lead day - selected day): <= 0 started, 1.. days to go, NO_ONSET for none.
+NO_ONSET = 999.0
+
+ONSET_COUNTDOWN = Legend(
+    key="onset_countdown",
+    unit="days_to_onset",
+    bins=(
+        LegendBin(lower=-NO_ONSET, upper=1, color=_ONSET_COLORS[0], label="Started"),
+        LegendBin(lower=1, upper=4, color="#4f9a55", label="1–3 days"),
+        LegendBin(lower=4, upper=8, color="#7db55a", label="4–7 days"),
+        LegendBin(lower=8, upper=15, color="#a9c95f", label="8–14 days"),
+        LegendBin(lower=15, upper=22, color="#d3d96a", label="15–21 days"),
+        LegendBin(lower=22, upper=NO_ONSET, color="#f1e483", label="22+ days"),
+        LegendBin(lower=NO_ONSET, upper=None, color=_NO_ONSET_COLOR, label="Not in forecast"),
+    ),
+    note="Days until the rains set in",
 )
 
 

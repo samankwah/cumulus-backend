@@ -118,6 +118,50 @@ def test_rain_day_is_the_accumulation_start_date():
     assert metrics.rain_day(date(2026, 9, 25), 46) == date(2026, 11, 9)
 
 
+ONSET_RULE = dict(threshold_mm=20.0, window_days=3, guard_days=30, guard_max_dry_days=10, dry_threshold_mm=1.0)
+
+
+def _onset_day(series):
+    return int(metrics.onset(np.asarray(series, dtype=float), **ONSET_RULE).day)
+
+
+def test_onset_needs_20_mm_within_3_days_and_no_long_dry_spell_after():
+    showers = [2.0, 0.0] * 23  # a rain day every other day: never 20 mm in 3 days
+    assert _onset_day(showers) == 0
+
+    one_day = list(showers)
+    one_day[4] = 25.0  # a single 25 mm day counts ("within at most 3 days")
+    assert _onset_day(one_day) == 3  # the 2 mm shower on day 3 opens a 27 mm burst
+    one_day[2] = 0.0
+    assert _onset_day(one_day) == 5  # never dated to a dry day
+
+    false_start = [0.0] * 46
+    false_start[2:5] = [8.0, 8.0, 8.0]  # 24 mm, then 11 dry days: rejected
+    false_start[16:19] = [10.0, 10.0, 10.0]  # second burst, followed by rain every 5 days
+    for day in range(22, 46, 5):
+        false_start[day] = 4.0
+    assert _onset_day(false_start) == 17  # first day of the second burst
+    result = metrics.onset(np.asarray(false_start), **ONSET_RULE)
+    assert int(result.guard_days) == 30 and int(result.longest_dry_after) <= 10
+
+
+def test_onset_near_the_end_is_provisional_and_grids_work_per_cell():
+    late = [0.0, 2.0] * 23
+    late[40:42] = [12.0, 12.0]
+    result = metrics.onset(np.asarray(late), **ONSET_RULE)
+    assert int(result.day) == 40 and int(result.guard_days) == 7  # days 40-46 only
+    grid = np.stack([np.asarray(late), np.full(46, np.nan)], axis=1)
+    days = metrics.onset(grid, **ONSET_RULE).day
+    assert days[0] == 40 and np.isnan(days[1])
+
+
+def test_onset_legend_labels_weeks_with_dates():
+    legend = legends.onset_legend(date(2026, 9, 25), 46)
+    labels = [item.label for item in legend.bins]
+    assert labels[0] == "No onset" and labels[1] == "25 Sep–1 Oct" and labels[-1] == "6 Nov–9 Nov"
+    assert legends.classify(np.array([0.0, 1.0, 7.0, 8.0, 46.0, np.nan]), legend).tolist() == [0, 1, 1, 2, 7, -1]
+
+
 def test_legend_classification_is_fixed_and_transparent_below_daily_minimum():
     values = np.array([np.nan, 0.4, 1.0, 4.9, 150.0])
     assert legends.classify(values, legends.RAIN_DAILY).tolist() == [-1, -1, 0, 1, 8]
@@ -287,7 +331,8 @@ def test_runs_endpoint_summarises_active_run(client):
     assert run["lead_days"] == 14 and run["missing_lead_days"] == list(range(15, 47))
     assert run["first_day"] == "2026-09-25" and run["days"][0]["value"] == pytest.approx(5.0)
     assert [week["days"] for week in run["weeks"]] == [7, 7]
-    assert {layer["layer"] for layer in run["layers"]} == {"rainfall", "rainy_days", "dry_spell_days", "wet_spell_days"}
+    assert {layer["layer"] for layer in run["layers"]} == {"rainfall", "rainy_days", "dry_spell_days", "wet_spell_days", "onset"}
+    assert run["thresholds"]["onset_mm"] == 20 and run["thresholds"]["onset_guard_days"] == 30
 
 
 def test_layer_and_tile_endpoints(client):
@@ -350,6 +395,37 @@ def test_indicator_layers_support_daily_and_weekly_periods(client):
     assert client.get("/subseasonal/layer", params={"layer": "rainy_days"}).json()["aggregation"] == "total"
 
 
+def test_onset_layer_tiles_and_area_values(client):
+    layer = client.get("/subseasonal/layer", params={"layer": "onset", "aggregation": "total"}).json()
+    assert layer["aggregation"] == "total" and layer["legend"]["unit"] == "date"
+    assert layer["legend"]["bins"][1]["label"] == "25 Sep–1 Oct"
+    # The fixture never reaches 20 mm in 3 days (15 mm on days 1-3), so nowhere has an onset.
+    assert layer["stats"]["share"] == 0 and layer["stats"]["min"] is None
+    tile = client.get(layer["tile_url"].replace("{z}", "7").replace("{x}", "63").replace("{y}", "61"))
+    assert tile.status_code == 200 and tile.content.startswith(b"\x89PNG")
+    values = client.get("/subseasonal/area-values", params={"level": "region", "layer": "onset", "aggregation": "total"}).json()
+    assert values["unit"] == "date" and values["values"]["Northern"] == 0
+    assert client.get("/subseasonal/layer", params={"layer": "onset", "aggregation": "weekly"}).status_code == 422
+
+    # By day (the default): nothing has started and nothing is coming, so every area reads "not in forecast".
+    status = client.get("/subseasonal/layer", params={"layer": "onset", "index": 5}).json()
+    assert status["aggregation"] == "daily" and status["legend"]["unit"] == "days_to_onset"
+    assert status["title"].startswith("Onset status") and status["stats"]["share"] == 0 and status["stats"]["upcoming_share"] == 0
+    countdown = client.get("/subseasonal/area-values", params={"level": "region", "layer": "onset", "index": 5}).json()
+    assert countdown["values"]["Northern"] == legends.NO_ONSET
+
+
+def test_onset_countdown_reads_started_soon_and_none():
+    from cumulus.services.subseasonal_service import onset_countdown
+
+    onset_day = np.array([3.0, 10.0, 0.0, np.nan])
+    values = onset_countdown(onset_day, 5)
+    assert values[:3].tolist() == [-2.0, 5.0, legends.NO_ONSET] and np.isnan(values[3])
+    classes = legends.classify(values, legends.ONSET_COUNTDOWN).tolist()
+    labels = [legends.ONSET_COUNTDOWN.bins[i].label for i in classes[:3]]
+    assert labels == ["Started", "4–7 days", "Not in forecast"] and classes[3] == -1
+
+
 def test_point_and_area_series(client):
     point = client.get("/subseasonal/sample", params={"latitude": 5.6, "longitude": -0.2}).json()
     assert point["inside_ghana"] and point["region"] == "Greater Accra"
@@ -357,6 +433,7 @@ def test_point_and_area_series(client):
     assert [(spell["kind"], spell["start_day"], spell["end_day"]) for spell in point["spells"]] == [("wet", 1, 3), ("dry", 4, 9)]
     assert point["spells"][0]["open_start"] is True
     assert point["days"][4]["spell"] == "dry" and point["days"][0]["spell"] == "wet"
+    assert point["onset"] is None
 
     area = client.get("/subseasonal/area", params={"level": "region", "name": "northern"})
     assert area.status_code == 200 and area.json()["name"] == "Northern" and area.json()["cell_count"] > 100

@@ -327,8 +327,13 @@ class SubseasonalConfig(BaseModel):
     wet_day_threshold_mm: float = 1.0
     dry_spell_min_days: int = 5
     wet_spell_min_days: int = 3
+    # Rainy-season onset: >= 20 mm within 3 days, then no dry spell over 10 days in the next 30.
+    onset_threshold_mm: float = 20.0
+    onset_window_days: int = 3
+    onset_guard_days: int = 30
+    onset_guard_max_dry_days: int = 10
     min_lead_days: int = 7
-    retention_runs: int = 3
+    retention_runs: int = 10
     stale_after_days: int = 3
     raw_cache_dir: Path | None = None
     local_source_dir: Path | None = None

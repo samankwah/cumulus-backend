@@ -675,6 +675,10 @@ class SubseasonalThresholds(BaseModel):
     wet_day_mm: float
     dry_spell_min_days: int
     wet_spell_min_days: int
+    onset_mm: float | None = None
+    onset_window_days: int | None = None
+    onset_guard_days: int | None = None
+    onset_max_dry_days: int | None = None
 
 
 class SubseasonalDay(BaseModel):
@@ -755,6 +759,10 @@ class SubseasonalLayerStats(BaseModel):
     mean: float | None = None
     max: float | None = None
     min: float | None = None
+    # Onset layer only: % of Ghana with an onset in the window, and % where it is provisional.
+    share: float | None = None
+    upcoming_share: float | None = None
+    provisional_share: float | None = None
 
 
 class SubseasonalLayerResponse(BaseModel):
@@ -777,6 +785,8 @@ class SubseasonalLayerResponse(BaseModel):
     bounds: dict[str, float] | None = None
     stats: SubseasonalLayerStats
     description: str
+    # Onset only: % of Ghana where the rains have set in by each day (1..lead_days).
+    progress: list[float] | None = None
 
 
 class SubseasonalAreaValuesResponse(BaseModel):
@@ -810,6 +820,15 @@ class SubseasonalSpell(BaseModel):
     total_mm: float | None = None
 
 
+class SubseasonalOnset(BaseModel):
+    day: int
+    date: date
+    rain_mm: float | None = None
+    longest_dry_after: int
+    guard_days: int
+    provisional: bool
+
+
 class SubseasonalSeriesResponse(BaseModel):
     kind: str
     name: str
@@ -828,6 +847,7 @@ class SubseasonalSeriesResponse(BaseModel):
     days: list[SubseasonalDay]
     weeks: list[SubseasonalWeek]
     metrics: SubseasonalMetrics
+    onset: SubseasonalOnset | None = None
     spells: list[SubseasonalSpell]
     thresholds: SubseasonalThresholds
     guidance: str

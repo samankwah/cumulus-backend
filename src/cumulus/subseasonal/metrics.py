@@ -1,4 +1,4 @@
-"""Rainfall arithmetic for sub-seasonal runs: weekly windows, run lengths and wet/dry spells.
+"""Rainfall arithmetic for sub-seasonal runs: weekly windows, run lengths, wet/dry spells and onset.
 
 All gridded functions take arrays shaped ``(day, ...)`` so the same code serves a full
 ``(day, lat, lon)`` grid and a single ``(day,)`` point or area series.
@@ -143,6 +143,70 @@ def find_spells(series: np.ndarray, *, wet_threshold_mm: float, dry_spell_min_da
                     )
                 )
     return sorted(spells, key=lambda spell: spell.start_day)
+
+
+@dataclass(frozen=True)
+class Onset:
+    """Per-cell onset search over the forecast window, each array shaped like ``values[0]``.
+
+    ``day`` is the 1-based lead day the onset rains start on (0 = no onset in the window, NaN =
+    no data). ``guard_days`` is how many of the guard days the window still covered, so a value
+    below the full guard means the dry-spell check was cut short by the end of the forecast.
+    """
+
+    day: np.ndarray
+    rain_mm: np.ndarray
+    longest_dry_after: np.ndarray
+    guard_days: np.ndarray
+
+
+def onset(
+    values: np.ndarray,
+    *,
+    threshold_mm: float,
+    window_days: int,
+    guard_days: int,
+    guard_max_dry_days: int,
+    dry_threshold_mm: float,
+) -> Onset:
+    """First rain day from which ``threshold_mm`` falls within ``window_days`` days, with no dry
+    spell longer than ``guard_max_dry_days`` in the ``guard_days`` days from that day.
+
+    Mirrors the seasonal onset rule, searched only inside the forecast, with no fallback: a cell
+    where no day qualifies has no onset. Rain is never negative, so "within at most N days" is the
+    same test as an N-day sum.
+    """
+    values = np.asarray(values, dtype=float)
+    days = values.shape[0]
+    window_days = max(int(window_days), 1)
+    guard_days = max(int(guard_days), 1)
+    rain = np.nan_to_num(values, nan=0.0)
+    dry = dry_mask(values, dry_threshold_mm)
+    all_missing = np.all(np.isnan(values), axis=0)
+
+    shape = values.shape[1:]
+    found = np.zeros(shape, dtype=bool)
+    day = np.zeros(shape, dtype=float)
+    rain_mm = np.full(shape, np.nan)
+    longest_after = np.full(shape, np.nan)
+    covered = np.full(shape, np.nan)
+    for start in range(days - window_days + 1):
+        total = rain[start : start + window_days].sum(axis=0)
+        end = min(start + guard_days, days)
+        longest = run_lengths(dry[start:end]).max(axis=0)
+        # The window opens on a rain day, so the onset date is the first rainy day of the burst.
+        hit = ~found & ~dry[start] & (total >= threshold_mm) & (longest <= guard_max_dry_days)
+        if not hit.any():
+            continue
+        day[hit] = start + 1
+        rain_mm[hit] = total[hit]
+        longest_after[hit] = longest[hit]
+        covered[hit] = end - start
+        found |= hit
+        if found.all():
+            break
+    day = np.where(all_missing, np.nan, day)
+    return Onset(day=day, rain_mm=rain_mm, longest_dry_after=longest_after, guard_days=covered)
 
 
 def rain_day(init_date: date, lead_day: int) -> date:

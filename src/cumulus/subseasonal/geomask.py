@@ -73,6 +73,59 @@ class AreaIndex:
         return weights
 
 
+@dataclass(frozen=True)
+class AreaWeights:
+    """Land fraction per forecast cell and one weight row per region/district (cells flattened)."""
+
+    land: np.ndarray  # (lat, lon) float32
+    matrices: dict[str, tuple[tuple[str, ...], np.ndarray]]  # level -> (names, (areas, cells) float32)
+
+
+_WEIGHTS_CACHE: dict[str, AreaWeights] = {}
+
+
+def area_weights(index: AreaIndex) -> AreaWeights:
+    """Weights for every area in one pass over the fine raster, shared by all runs on the same grid.
+
+    Equivalent to ``all_weights`` (fraction of each cell's sub-pixels inside the area), but a single
+    ``bincount`` instead of one full-raster comparison per district.
+    """
+    cached = _WEIGHTS_CACHE.get(index.key)
+    if cached is not None:
+        return cached
+    fine = index.fine_district
+    rows, cols = fine.shape[0] // FINE_FACTOR, fine.shape[1] // FINE_FACTOR
+    cells = rows * cols
+    cell_id = (np.arange(fine.shape[0])[:, None] // FINE_FACTOR) * cols + (np.arange(fine.shape[1])[None, :] // FINE_FACTOR)
+    inside = fine >= 0
+    districts = len(index.district_names)
+    counts = np.bincount(
+        fine[inside].astype(np.int64) * cells + cell_id[inside],
+        minlength=districts * cells,
+    ).reshape(districts, cells).astype(np.float32) / float(FINE_FACTOR * FINE_FACTOR)
+    region_rows = {name: np.zeros(cells, dtype=np.float32) for name in index.region_names}
+    for position, region in enumerate(index.district_regions):
+        region_rows[region] += counts[position]
+
+    def _matrix(named: list[tuple[str, np.ndarray]]) -> tuple[tuple[str, ...], np.ndarray]:
+        kept = [(name, row) for name, row in named if float(row.sum()) > 0]
+        names = tuple(name for name, _ in kept)
+        matrix = np.stack([row for _, row in kept]).astype(np.float32) if kept else np.zeros((0, cells), np.float32)
+        return names, matrix
+
+    weights = AreaWeights(
+        land=_block_mean(inside.astype(np.float32)).astype(np.float32),
+        matrices={
+            "district": _matrix(list(zip(index.district_names, counts))),
+            "region": _matrix([(name, region_rows[name]) for name in index.region_names]),
+        },
+    )
+    if len(_WEIGHTS_CACHE) >= 4:
+        _WEIGHTS_CACHE.pop(next(iter(_WEIGHTS_CACHE)))
+    _WEIGHTS_CACHE[index.key] = weights
+    return weights
+
+
 def _block_mean(fine: np.ndarray) -> np.ndarray:
     rows, cols = fine.shape
     return fine.reshape(rows // FINE_FACTOR, FINE_FACTOR, cols // FINE_FACTOR, FINE_FACTOR).mean(axis=(1, 3))

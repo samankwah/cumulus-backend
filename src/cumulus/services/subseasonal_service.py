@@ -33,7 +33,7 @@ from cumulus.subseasonal import geomask, legends, metrics
 from cumulus.subseasonal.ingest import ACTIVE_FILE_NAME, MANIFEST_FILE_NAME, list_run_ids, source_dir
 from cumulus.utils.tiles import TILE_SIZE, encode_png, tile_pixel_latitudes, tile_pixel_longitudes
 
-Layer = Literal["rainfall", "rainy_days", "dry_spell_days", "wet_spell_days"]
+Layer = Literal["rainfall", "rainy_days", "dry_spell_days", "wet_spell_days", "onset"]
 Aggregation = Literal["daily", "weekly", "total"]
 AreaLevel = Literal["region", "district"]
 
@@ -59,6 +59,15 @@ LAYERS: dict[str, dict[str, Any]] = {
         "description": "Days falling inside wet spells (≥{wetspell} consecutive days with ≥{wet} mm).",
         "aggregations": ["total", "daily", "weekly"],
     },
+    # Daily: where the rains have set in by the chosen day, and how soon elsewhere. Total: the date.
+    "onset": {
+        "label": "Onset",
+        "description": (
+            "First day with at least {onset_mm} mm of rain within {onset_window} days and no dry spell longer than "
+            "{onset_dry} days in the {onset_guard} days from then. Searched only inside this forecast."
+        ),
+        "aggregations": ["daily", "total"],
+    },
 }
 LAYER_LEGENDS = {
     ("rainfall", "daily"): legends.RAIN_DAILY,
@@ -82,6 +91,8 @@ GUIDANCE = (
 TILE_CACHE_SIZE = 2048
 
 _LOAD_LOCK = RLock()
+# Prepared runs by cache key, so the runs list can reuse a run already in memory.
+_PREPARED: dict[tuple[Any, ...], "PreparedRun"] = {}
 
 
 @dataclass
@@ -96,12 +107,16 @@ class PreparedRun:
     wet_threshold_mm: float
     dry_spell_min_days: int
     wet_spell_min_days: int
+    onset_rule: dict[str, float] = field(default_factory=dict)
     windows: list[metrics.Window] = field(default_factory=list)
     weekly: np.ndarray | None = None
     outlook: dict[str, np.ndarray] = field(default_factory=dict)
     # Per indicator: (day, lat, lon) 100/0 flags and (week, lat, lon) day counts.
     indicator_daily: dict[str, np.ndarray] = field(default_factory=dict)
     indicator_weekly: dict[str, np.ndarray] = field(default_factory=dict)
+    onset: metrics.Onset | None = None
+    # Onset of each area's mean rainfall, so map hover agrees with the drawer: {level: lead days}.
+    area_onset: dict[str, np.ndarray] = field(default_factory=dict)
     land_weights: np.ndarray | None = None
     area_matrices: dict[str, tuple[tuple[str, ...], np.ndarray]] = field(default_factory=dict)
     tile_cache: OrderedDict[tuple[Any, ...], bytes] = field(default_factory=OrderedDict)
@@ -138,18 +153,34 @@ def load_run(settings: Settings, run_id: str | None = None) -> PreparedRun:
     resolved = run_id or _active_run_id(settings)
     if resolved not in list_run_ids(settings):
         raise SubseasonalRunNotFoundError(f"Sub-seasonal run '{resolved}' is not available.")
-    run_dir = source_dir(settings) / resolved
-    config = settings.subseasonal
     with _LOAD_LOCK:
-        return _load_run_cached(
-            str(run_dir),
-            (run_dir / MANIFEST_FILE_NAME).stat().st_mtime_ns,
-            str(settings.seasonal_map.district_geojson_path),
-            str(config.artifact_dir),
-            float(config.wet_day_threshold_mm),
-            int(config.dry_spell_min_days),
-            int(config.wet_spell_min_days),
-        )
+        key = _run_key(settings, resolved)
+        run = _load_run_cached(*key)
+        _PREPARED[key] = run
+        while len(_PREPARED) > 4:
+            _PREPARED.pop(next(iter(_PREPARED)))
+        return run
+
+
+def _run_key(settings: Settings, run_id: str) -> tuple[Any, ...]:
+    """Everything a prepared run depends on: the artifact (by mtime), boundaries and thresholds."""
+    run_dir = source_dir(settings) / run_id
+    config = settings.subseasonal
+    return (
+        str(run_dir),
+        (run_dir / MANIFEST_FILE_NAME).stat().st_mtime_ns,
+        str(settings.seasonal_map.district_geojson_path),
+        str(config.artifact_dir),
+        float(config.wet_day_threshold_mm),
+        int(config.dry_spell_min_days),
+        int(config.wet_spell_min_days),
+        (
+            float(config.onset_threshold_mm),
+            int(config.onset_window_days),
+            int(config.onset_guard_days),
+            int(config.onset_guard_max_dry_days),
+        ),
+    )
 
 
 @lru_cache(maxsize=4)
@@ -161,6 +192,7 @@ def _load_run_cached(
     wet_threshold_mm: float,
     dry_spell_min_days: int,
     wet_spell_min_days: int,
+    onset_rule: tuple[float, int, int, int] = (20.0, 3, 30, 10),
 ) -> PreparedRun:
     directory = Path(run_dir)
     manifest = json.loads((directory / MANIFEST_FILE_NAME).read_text(encoding="utf-8"))
@@ -185,6 +217,7 @@ def _load_run_cached(
         wet_threshold_mm=wet_threshold_mm,
         dry_spell_min_days=dry_spell_min_days,
         wet_spell_min_days=wet_spell_min_days,
+        onset_rule=dict(zip(("threshold_mm", "window_days", "guard_days", "guard_max_dry_days"), onset_rule)),
     )
     run.windows = metrics.weekly_windows(run.day_count)
     run.weekly = metrics.window_sums(daily, run.windows).astype(np.float32)
@@ -204,14 +237,30 @@ def _load_run_cached(
         dry_spell_min_days=dry_spell_min_days,
         wet_spell_min_days=wet_spell_min_days,
     )
-    land = areas.cell_land_fraction().astype(np.float32)
-    run.land_weights = land
+    run.onset = _onset(run, daily)
+    run.outlook["onset"] = run.onset.day.astype(np.float32)
+    weights = geomask.area_weights(areas)
+    run.land_weights = weights.land
+    flat = daily.reshape(run.day_count, -1).astype(float)
     for level in ("region", "district"):
-        weights = areas.all_weights(level)
-        names = tuple(weights)
-        matrix = np.stack([weights[name].ravel() for name in names]).astype(np.float32) if names else np.zeros((0, land.size), np.float32)
+        names, matrix = weights.matrices[level]
         run.area_matrices[level] = (names, matrix)
+        sums = matrix.sum(axis=1)
+        area_daily = np.divide(flat @ matrix.T, sums, out=np.full((run.day_count, len(names)), np.nan), where=sums > 0)
+        run.area_onset[level] = _onset(run, area_daily).day
     return run
+
+
+def _onset(run: PreparedRun, values: np.ndarray) -> metrics.Onset:
+    rule = run.onset_rule
+    return metrics.onset(
+        values,
+        threshold_mm=float(rule["threshold_mm"]),
+        window_days=int(rule["window_days"]),
+        guard_days=int(rule["guard_days"]),
+        guard_max_dry_days=int(rule["guard_max_dry_days"]),
+        dry_threshold_mm=run.wet_threshold_mm,
+    )
 
 
 def _indicator_fields(
@@ -255,17 +304,97 @@ def list_runs(settings: Settings) -> dict[str, Any]:
             "No sub-seasonal forecast run has been ingested yet. Run `python -m cumulus.subseasonal.ingest`."
         )
     active = _active_run_id(settings)
-    runs = [run_summary(settings, load_run(settings, run_id), active=run_id == active) for run_id in reversed(run_ids)]
+    runs = [run_summary(settings, _summary_view(settings, run_id), active=run_id == active) for run_id in reversed(run_ids)]
     return {"active_run_id": active, "runs": runs}
 
 
-def run_summary(settings: Settings, run: PreparedRun, *, active: bool) -> dict[str, Any]:
+@dataclass
+class _SummaryView:
+    """What a run summary needs: national means only, so listing every kept run stays cheap."""
+
+    run_id: str
+    manifest: dict[str, Any]
+    init_time: datetime
+    day_count: int
+    windows: list[metrics.Window]
+    national_daily: np.ndarray
+    national_weekly: np.ndarray
+    wet_threshold_mm: float
+    dry_spell_min_days: int
+    wet_spell_min_days: int
+    onset_rule: dict[str, float]
+
+    @property
+    def init_date(self) -> date:
+        return self.init_time.date()
+
+
+def _summary_view(settings: Settings, run_id: str) -> _SummaryView:
+    run_dir = source_dir(settings) / run_id
+    config = settings.subseasonal
+    with _LOAD_LOCK:
+        cached = _prepared_if_loaded(settings, run_id)
+        if cached is not None:
+            daily_mean = _land_mean(cached, cached.daily)
+            weekly_mean = _land_mean(cached, cached.weekly)
+            return _SummaryView(
+                cached.run_id, cached.manifest, cached.init_time, cached.day_count, cached.windows, daily_mean, weekly_mean,
+                cached.wet_threshold_mm, cached.dry_spell_min_days, cached.wet_spell_min_days, cached.onset_rule,
+            )
+        manifest, init_time, daily_mean, windows, weekly_mean = _national_means_cached(
+            str(run_dir),
+            (run_dir / MANIFEST_FILE_NAME).stat().st_mtime_ns,
+            str(settings.seasonal_map.district_geojson_path),
+            str(config.artifact_dir),
+        )
+    return _SummaryView(
+        str(manifest["run_id"]), manifest, init_time, int(daily_mean.size), windows, daily_mean, weekly_mean,
+        float(config.wet_day_threshold_mm), int(config.dry_spell_min_days), int(config.wet_spell_min_days),
+        {
+            "threshold_mm": float(config.onset_threshold_mm),
+            "window_days": int(config.onset_window_days),
+            "guard_days": int(config.onset_guard_days),
+            "guard_max_dry_days": int(config.onset_guard_max_dry_days),
+        },
+    )
+
+
+def _prepared_if_loaded(settings: Settings, run_id: str) -> PreparedRun | None:
+    """The fully prepared run if it is already in memory (e.g. the active run), without loading it."""
+    return _PREPARED.get(_run_key(settings, run_id))
+
+
+@lru_cache(maxsize=32)
+def _national_means_cached(run_dir: str, _manifest_mtime: int, geojson_path: str, mask_cache_dir: str):
+    directory = Path(run_dir)
+    manifest = json.loads((directory / MANIFEST_FILE_NAME).read_text(encoding="utf-8"))
+    with xr.open_dataset(directory / manifest.get("artifact", "rainfall.nc"), engine="scipy") as dataset:
+        dataset = dataset.load()
+    daily = np.asarray(dataset["precip"].values, dtype=np.float32)
+    latitudes = np.asarray(dataset["latitude"].values, dtype=float)
+    longitudes = np.asarray(dataset["longitude"].values, dtype=float)
+    areas = geomask.load_area_index(Path(geojson_path), latitudes, longitudes, Path(mask_cache_dir))
+    land = geomask.area_weights(areas).land.ravel()
+    init_time = datetime.fromisoformat(manifest["init_time"])
+    if init_time.tzinfo is None:
+        init_time = init_time.replace(tzinfo=UTC)
+    windows = metrics.weekly_windows(int(daily.shape[0]))
+    weekly = metrics.window_sums(daily, windows)
+
+    def _mean(values: np.ndarray) -> np.ndarray:
+        flat = values.reshape(values.shape[0], -1).astype(float)
+        return flat @ land / float(land.sum())
+
+    return manifest, init_time, _mean(daily), windows, _mean(weekly)
+
+
+def run_summary(settings: Settings, run: _SummaryView, *, active: bool) -> dict[str, Any]:
     manifest = run.manifest
     config = settings.subseasonal
     today = datetime.now(UTC).date()
     age_days = (today - run.init_date).days
-    national_daily = _land_mean(run, run.daily)
-    national_weekly = _land_mean(run, run.weekly)
+    national_daily = run.national_daily
+    national_weekly = run.national_weekly
     expected = int(manifest.get("expected_lead_days") or run.day_count)
     return {
         "run_id": run.run_id,
@@ -286,11 +415,7 @@ def run_summary(settings: Settings, run: PreparedRun, *, active: bool) -> dict[s
         "unit": "mm",
         "grid_resolution_degrees": manifest.get("grid", {}).get("resolution_degrees"),
         "bounds": manifest.get("bounds"),
-        "thresholds": {
-            "wet_day_mm": run.wet_threshold_mm,
-            "dry_spell_min_days": run.dry_spell_min_days,
-            "wet_spell_min_days": run.wet_spell_min_days,
-        },
+        "thresholds": _thresholds(run),
         "days": [_day_payload(run, day, round(float(value), 1)) for day, value in enumerate(national_daily, start=1)],
         "weeks": [_window_payload(run, window, round(float(value), 1)) for window, value in zip(run.windows, national_weekly)],
         "layers": [
@@ -331,7 +456,15 @@ def resolve_selection(run: PreparedRun, layer: str, aggregation: str | None, ind
     return LayerSelection(layer_key, aggregation_key, resolved_index)
 
 
+def onset_countdown(onset_day: np.ndarray, day: int) -> np.ndarray:
+    """Days from ``day`` until onset (<= 0: already started), NO_ONSET where none is forecast."""
+    values = np.where(onset_day > 0, onset_day - day, legends.NO_ONSET)
+    return np.where(np.isnan(onset_day), np.nan, values).astype(np.float32)
+
+
 def layer_field(run: PreparedRun, selection: LayerSelection) -> np.ndarray:
+    if selection.layer == "onset" and selection.aggregation == "daily":
+        return onset_countdown(run.outlook["onset"], selection.index)
     if selection.layer == "rainfall":
         if selection.aggregation == "daily":
             return run.daily[selection.index - 1]
@@ -349,12 +482,20 @@ def layer_field(run: PreparedRun, selection: LayerSelection) -> np.ndarray:
 def get_layer(settings: Settings, *, layer: str, aggregation: str | None, index: int | None, run_id: str | None) -> dict[str, Any]:
     run = load_run(settings, run_id)
     selection = resolve_selection(run, layer, aggregation, index)
-    legend = LAYER_LEGENDS[(selection.layer, selection.aggregation)]
+    legend = _legend_for(run, selection)
     values = layer_field(run, selection)
     start_day, end_day = _selection_days(run, selection)
     weights = run.land_weights
     assert weights is not None
     land_values = values[weights > 0]
+    if selection.layer == "onset":
+        stats = _onset_stats(run, selection.index if selection.aggregation == "daily" else None)
+    else:
+        stats = {
+            "mean": _round(float(np.average(values, weights=weights))) if float(weights.sum()) > 0 else None,
+            "max": _round(float(np.nanmax(land_values))) if land_values.size else None,
+            "min": _round(float(np.nanmin(land_values))) if land_values.size else None,
+        }
     query = urlencode(
         {"run_id": run.run_id, "layer": selection.layer, "aggregation": selection.aggregation, "index": selection.index}
     )
@@ -376,12 +517,62 @@ def get_layer(settings: Settings, *, layer: str, aggregation: str | None, index:
         "legend": legends.legend_payload(legend),
         "tile_url": f"/subseasonal/tiles/{{z}}/{{x}}/{{y}}.png?{query}",
         "bounds": run.manifest.get("bounds"),
-        "stats": {
-            "mean": _round(float(np.average(values, weights=weights))) if float(weights.sum()) > 0 else None,
-            "max": _round(float(np.nanmax(land_values))) if land_values.size else None,
-            "min": _round(float(np.nanmin(land_values))) if land_values.size else None,
-        },
+        "stats": stats,
         "description": _describe(LAYERS[selection.layer]["description"], run),
+        "progress": _onset_progress(run) if selection.layer == "onset" else None,
+    }
+
+
+def _onset_progress(run: PreparedRun) -> list[float]:
+    """% of Ghana where the rains have set in by each forecast day: the onset front, for the timeline."""
+    assert run.onset is not None and run.land_weights is not None
+    weights = run.land_weights
+    total = float(weights.sum())
+    day = np.nan_to_num(run.onset.day)
+    if total <= 0:
+        return [0.0] * run.day_count
+    return [round(100 * float(weights[(day > 0) & (day <= lead)].sum()) / total, 1) for lead in range(1, run.day_count + 1)]
+
+
+def _legend_for(run: PreparedRun, selection: LayerSelection) -> legends.Legend:
+    if selection.layer == "onset":
+        if selection.aggregation == "daily":
+            return legends.ONSET_COUNTDOWN
+        return _onset_legend(run.init_date, run.day_count)
+    return LAYER_LEGENDS[(selection.layer, selection.aggregation)]
+
+
+@lru_cache(maxsize=8)
+def _onset_legend(init_date: date, day_count: int) -> legends.Legend:
+    return legends.onset_legend(init_date, day_count)
+
+
+def _onset_stats(run: PreparedRun, as_of: int | None = None) -> dict[str, Any]:
+    """Land-weighted onset shares of Ghana and the date range (lead days).
+
+    Whole window: ``share`` = has an onset in the forecast. For one day (``as_of``): ``share`` =
+    rains have set in by that day, ``upcoming_share`` = still to come within the forecast.
+    """
+    assert run.onset is not None and run.land_weights is not None
+    weights = run.land_weights
+    total = float(weights.sum())
+    day = run.onset.day
+    found = np.nan_to_num(day) > 0
+    provisional = found & (np.nan_to_num(run.onset.guard_days, nan=0) < run.onset_rule["guard_days"])
+    on_land = found & (weights > 0)
+
+    def _share(mask: np.ndarray) -> float | None:
+        return _round(100 * float(weights[mask].sum()) / total) if total > 0 else None
+
+    started = found if as_of is None else found & (np.nan_to_num(day) <= as_of)
+    upcoming = found & ~started
+    return {
+        "mean": None,
+        "min": _round(float(day[on_land].min())) if on_land.any() else None,
+        "max": _round(float(day[on_land].max())) if on_land.any() else None,
+        "share": _share(started),
+        "upcoming_share": _share(upcoming) if as_of is not None else None,
+        "provisional_share": _share(provisional),
     }
 
 
@@ -435,8 +626,13 @@ def _render_tile(run: PreparedRun, selection: LayerSelection, z: int, x: int, y:
     if not inside.any():
         return _empty_tile()
 
-    values = _bilinear(layer_field(run, selection), run.latitudes, run.longitudes, latitudes, longitudes)
-    legend = LAYER_LEGENDS[(selection.layer, selection.aggregation)]
+    field_values = layer_field(run, selection)
+    if selection.layer == "onset":
+        # Interpolating between day numbers would invent dates, so each pixel takes its cell's value.
+        values = _nearest(field_values, run.latitudes, run.longitudes, latitudes, longitudes)
+    else:
+        values = _bilinear(field_values, run.latitudes, run.longitudes, latitudes, longitudes)
+    legend = _legend_for(run, selection)
     classes = legends.classify(values, legend)
     colors = legends.bin_colors_rgb(legend)
     visible = inside & (classes >= 0)
@@ -462,6 +658,13 @@ def _bilinear(grid: np.ndarray, grid_lat: np.ndarray, grid_lon: np.ndarray, lat:
     return top * (1 - wy) + bottom * wy
 
 
+def _nearest(grid: np.ndarray, grid_lat: np.ndarray, grid_lon: np.ndarray, lat: np.ndarray, lon: np.ndarray) -> np.ndarray:
+    """Nearest-cell lookup of an ascending regular grid onto the (lat x lon) pixel mesh."""
+    rows = np.clip(np.rint(np.interp(lat, grid_lat, np.arange(grid_lat.size))).astype(int), 0, grid_lat.size - 1)
+    cols = np.clip(np.rint(np.interp(lon, grid_lon, np.arange(grid_lon.size))).astype(int), 0, grid_lon.size - 1)
+    return grid[np.ix_(rows, cols)]
+
+
 # --------------------------------------------------------------------------- area values for map hover
 
 
@@ -478,10 +681,16 @@ def get_area_values(
     level_key = _resolve_level(level)
     selection = resolve_selection(run, layer, aggregation, index)
     names, matrix = run.area_matrices[level_key]
-    values = layer_field(run, selection).ravel()
-    sums = matrix.sum(axis=1)
-    means = np.divide(matrix @ values, sums, out=np.full(len(names), np.nan, dtype=np.float32), where=sums > 0)
-    legend = LAYER_LEGENDS[(selection.layer, selection.aggregation)]
+    if selection.layer == "onset":
+        # A mean of onset days is not a date anyone would see; use the onset of the area's mean rain.
+        means = run.area_onset[level_key]
+        if selection.aggregation == "daily":
+            means = onset_countdown(means, selection.index)
+    else:
+        values = layer_field(run, selection).ravel()
+        sums = matrix.sum(axis=1)
+        means = np.divide(matrix @ values, sums, out=np.full(len(names), np.nan, dtype=np.float32), where=sums > 0)
+    legend = _legend_for(run, selection)
     return {
         "run_id": run.run_id,
         "level": level_key,
@@ -599,6 +808,7 @@ def _series_payload(run: PreparedRun, series: np.ndarray) -> dict[str, Any]:
             "max_day_mm": _round(float(np.nanmax(series))) if series.size else None,
             "max_day": int(np.nanargmax(series)) + 1 if series.size else None,
         },
+        "onset": _onset_payload(run, series),
         "spells": [
             {
                 "kind": spell.kind,
@@ -613,16 +823,41 @@ def _series_payload(run: PreparedRun, series: np.ndarray) -> dict[str, Any]:
             }
             for spell in spells
         ],
-        "thresholds": {
-            "wet_day_mm": run.wet_threshold_mm,
-            "dry_spell_min_days": run.dry_spell_min_days,
-            "wet_spell_min_days": run.wet_spell_min_days,
-        },
+        "thresholds": _thresholds(run),
         "guidance": GUIDANCE,
     }
 
 
+def _onset_payload(run: PreparedRun, series: np.ndarray) -> dict[str, Any] | None:
+    result = _onset(run, series)
+    day = float(result.day)
+    if not math.isfinite(day) or day <= 0:
+        return None
+    guard_days = int(result.guard_days)
+    return {
+        "day": int(day),
+        "date": metrics.rain_day(run.init_date, int(day)),
+        "rain_mm": _round(float(result.rain_mm)),
+        "longest_dry_after": int(result.longest_dry_after),
+        "guard_days": guard_days,
+        "provisional": guard_days < int(run.onset_rule["guard_days"]),
+    }
+
+
 # --------------------------------------------------------------------------- helpers
+
+
+def _thresholds(run: Any) -> dict[str, Any]:
+    rule = run.onset_rule
+    return {
+        "wet_day_mm": run.wet_threshold_mm,
+        "dry_spell_min_days": run.dry_spell_min_days,
+        "wet_spell_min_days": run.wet_spell_min_days,
+        "onset_mm": float(rule["threshold_mm"]),
+        "onset_window_days": int(rule["window_days"]),
+        "onset_guard_days": int(rule["guard_days"]),
+        "onset_max_dry_days": int(rule["guard_max_dry_days"]),
+    }
 
 
 def _land_mean(run: PreparedRun, values: np.ndarray) -> np.ndarray:
@@ -669,6 +904,8 @@ def _selection_title(run: PreparedRun, selection: LayerSelection) -> str:
     start = metrics.rain_day(run.init_date, start_day)
     end = metrics.rain_day(run.init_date, end_day)
     label = LAYERS[selection.layer]["label"]
+    if selection.layer == "onset":
+        label = "Onset status" if selection.aggregation == "daily" else "Onset date"
     if selection.aggregation == "daily":
         return f"{label} · {start:%a} {_day_month(start)}"
     if selection.aggregation == "weekly":
@@ -682,11 +919,15 @@ def _day_month(value: date) -> str:
     return f"{value.day} {value:%b}"
 
 
-def _describe(template: str, run: PreparedRun) -> str:
+def _describe(template: str, run: Any) -> str:
     return template.format(
         wet=_fmt(run.wet_threshold_mm),
         dry=run.dry_spell_min_days,
         wetspell=run.wet_spell_min_days,
+        onset_mm=_fmt(float(run.onset_rule["threshold_mm"])),
+        onset_window=int(run.onset_rule["window_days"]),
+        onset_guard=int(run.onset_rule["guard_days"]),
+        onset_dry=int(run.onset_rule["guard_max_dry_days"]),
     )
 
 

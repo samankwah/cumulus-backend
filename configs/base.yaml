@@ -132,7 +132,12 @@ subseasonal:
   wet_day_threshold_mm: 1.0
   dry_spell_min_days: 5
   wet_spell_min_days: 3
+  # Onset: at least 20 mm within 3 days, with no dry spell longer than 10 days in the 30 days from then.
+  onset_threshold_mm: 20.0
+  onset_window_days: 3
+  onset_guard_days: 30
+  onset_guard_max_dry_days: 10
   min_lead_days: 7
-  retention_runs: 3
+  retention_runs: 10
   stale_after_days: 3
   azure_prefix: Unet/

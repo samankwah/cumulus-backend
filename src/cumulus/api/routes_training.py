@@ -5,7 +5,6 @@ from __future__ import annotations
 from fastapi import APIRouter, HTTPException
 
 from cumulus.schemas import TrainRequest, TrainResponse
-from cumulus.services.training_service import train_from_inputs
 from cumulus.settings import get_settings
 
 router = APIRouter(tags=["training"])
@@ -13,6 +12,9 @@ router = APIRouter(tags=["training"])
 
 @router.post("/train", response_model=TrainResponse)
 def train_endpoint(request: TrainRequest) -> TrainResponse:
+    # Imported here: the training stack pulls in scikit-learn, which adds seconds to every cold start.
+    from cumulus.services.training_service import train_from_inputs
+
     try:
         artifact = train_from_inputs(
             get_settings(),

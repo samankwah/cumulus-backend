@@ -2,7 +2,7 @@
 
 FastAPI service and reusable Python package (`cumulus`) for the Ghana seasonal
 advisory platform. The Next.js frontend lives in a separate repository,
-[`seasonal-fcst-frontend`](https://github.com/samankwah/seasonal-fcst-frontend).
+[`cumulus-frontend`](https://github.com/samankwah/cumulus-frontend).
 
 This repository is self-contained: runtime config lives in `configs/`, and the
 published forecast products, the district geometry and a trained baseline model

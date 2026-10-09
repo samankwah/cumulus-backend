@@ -27,6 +27,7 @@ def test_settings_accepts_comma_separated_cors_allowed_origins(monkeypatch):
         "http://127.0.0.1:3000",
         "http://localhost:3000",
         "https://seasonalforecast.netlify.app",
+        "https://cumulus-gh.vercel.app",
         "https://frontend.example.com",
     ]
 
@@ -43,6 +44,7 @@ def test_settings_accepts_json_cors_allowed_origins(monkeypatch):
         "http://127.0.0.1:3000",
         "http://localhost:3000",
         "https://seasonalforecast.netlify.app",
+        "https://cumulus-gh.vercel.app",
         "https://frontend.example.com",
     ]
 
@@ -56,6 +58,7 @@ def test_settings_accepts_single_cors_allowed_origin(monkeypatch):
         "http://127.0.0.1:3000",
         "http://localhost:3000",
         "https://seasonalforecast.netlify.app",
+        "https://cumulus-gh.vercel.app",
         "https://frontend.example.com",
     ]
 

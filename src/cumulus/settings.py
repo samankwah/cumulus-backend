@@ -41,7 +41,10 @@ DEFAULT_CORS_ALLOWED_ORIGINS = (
     "http://127.0.0.1:3000",
     "http://localhost:3000",
     "https://seasonalforecast.netlify.app",
+    "https://cumulus-gh.vercel.app",
 )
+# The frontend's Vercel preview deployments (per-commit and per-branch URLs), limited to its own team scope.
+DEFAULT_CORS_ALLOWED_ORIGIN_REGEX = r"https://cumulus-gh-[a-z0-9-]+-0243999631a-5912s-projects\.vercel\.app"
 
 
 class BiasCorrectionConfig(BaseModel):

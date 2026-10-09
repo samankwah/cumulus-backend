@@ -1,107 +1,92 @@
 # Cumulus Backend
 
-FastAPI service and reusable Python package (`cumulus`) for the Ghana seasonal
-advisory platform. The Next.js frontend lives in a separate repository,
-[`cumulus-frontend`](https://github.com/samankwah/cumulus-frontend).
+FastAPI service and Python package (`cumulus`) behind the Cumulus forecast map for Ghana. It serves:
+- the 46-day IFS-UNet rainfall outlook, with map tiles, area means and point/area series;
+- the seasonal (wass2s) products;
+- the advisory and model endpoints.
 
-This repository is self-contained: runtime config lives in `configs/`, and the
-published forecast products, the district geometry and a trained baseline model
-are committed under `data/`. No sibling `ml/` checkout is required.
+**Live API:** https://cumulus-backend.vercel.app (try [`/health`](https://cumulus-backend.vercel.app/health)) · **Frontend:** [`cumulus-frontend`](https://github.com/samankwah/cumulus-frontend)
 
-## Requirements
+The repo is self-contained:
+- runtime config is in `configs/`;
+- the forecast artifacts, district geometry and a baseline model are committed under `data/`.
 
-- Python >= 3.11
+## Quick start
 
-## Install
+Requires Python 3.11 or later.
 
 ```powershell
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 python -m pip install -e ".[dev]"
-```
-
-Optional extras: `.[grib]` (read GRIB forecast sources via `cfgrib`), `.[download]`
-(ERA5 downloads via `cdsapi`).
-
-## Run locally
-
-```powershell
 copy .env.example .env
-powershell -ExecutionPolicy Bypass -File .\scripts\start-backend-local.ps1
+python -m uvicorn cumulus.main:app --app-dir src --port 8000   # http://127.0.0.1:8000/docs
 ```
 
-Or directly:
+`scripts\start-backend-local.ps1` does the same on `0.0.0.0:8000`. It refuses to start if port 8000 is already in use (pass `-ForceRestart` to replace it). It also chooses an upstream forecast source for the seasonal endpoints, in this order:
+1. `CUMULUS_ERA5_FORECAST_PATH`, `CUMULUS_GFS_FORECAST_PATH` or `CUMULUS_UPSTREAM_FORECAST_PATH`;
+2. otherwise `data/raw/{era5,gfs}/manifest.json`;
+3. otherwise the bundled `data/sample_forecast_smoke.nc`.
 
-```powershell
-python -m uvicorn cumulus.main:app --app-dir src --host 0.0.0.0 --port 8000
-```
-
-The helper script picks a forecast source in this order: `CUMULUS_ERA5_FORECAST_PATH`
-/ `CUMULUS_GFS_FORECAST_PATH` / `CUMULUS_UPSTREAM_FORECAST_PATH` if set, then any
-manifest under `data/raw/{era5,gfs}/manifest.json`, otherwise the bundled
-`data/sample_forecast_smoke.nc` (read with the `scipy` engine).
-
-Check it is up:
-
-```powershell
-curl http://127.0.0.1:8000/health
-```
+Optional extras:
+- `.[ingest]`: needed for the 46-day ingest.
+- `.[grib]`: GRIB forecast sources.
+- `.[download]`: ERA5 downloads.
 
 ## Configuration
 
-Settings are read from environment variables (prefix `CUMULUS_`, nested delimiter
-`__`) layered over `configs/*.yaml`. See `.env.example` for the common ones. Key
-paths default to locations inside this repo:
+Environment variables use the `CUMULUS_` prefix (with `__` for nested settings) and override `configs/*.yaml`. Relative paths resolve from the repo root. See `.env.example`.
 
-| Setting | Default | Purpose |
+| Variable | Default | Purpose |
 | --- | --- | --- |
-| `CUMULUS_CONFIG_DIR` | `configs` | runtime YAML config |
-| `CUMULUS_DATA_DIR` | `data` | ML data root (`data/raw`, `data/processed`) and artifact root |
-| `CUMULUS_DEFAULT_STATION_PATH` | `data/raw/stations/Rainfall_data.xlsx` | station workbook, only used by `POST /train` |
-| `CUMULUS_CORS_ALLOWED_ORIGINS` | localhost:3000 + deployed frontend | extra allowed browser origins (comma-separated) |
+| `CUMULUS_CONFIG_DIR` | `configs` | Runtime YAML config. |
+| `CUMULUS_DATA_DIR` | `data` | Data and artifact root. |
+| `CUMULUS_CORS_ALLOWED_ORIGINS` | — | Extra browser origins, comma-separated. These are always allowed: `localhost:3000`, `127.0.0.1:3000`, `https://cumulus-gh.vercel.app` and that project's Vercel preview URLs. |
+| `CUMULUS_DEFAULT_STATION_PATH` | `data/raw/stations/Rainfall_data.xlsx` | Station workbook, used only by `POST /train`. |
+| `CUMULUS_SUBSEASONAL__AZURE_SAS_URL` | — | Container SAS URL (Read + List) for the 46-day ingest. Never commit it. |
 
-## Sub-seasonal rainfall (IFS-UNet, 46 days)
+## API
 
-The frontend's default "Next 46 days" view is served from ECMWF IFS extended-range runs
-downscaled to 0.1° with a UNet. Upstream delivers one NetCDF4/HDF5 file per lead day
-(`Unet/YYYY-MM-DD/YYYY-MM-DD-00-LLLL.nc`, variable `precip_24h`, Africa-wide, ~53 MB per run).
-The API never reads those directly: an offline **ingest** turns each run into a compact
-Ghana artifact (NetCDF3, int16 at 0.1 mm, ~0.45 MB) that is committed under
-`data/artifacts/subseasonal/ifs_unet/<run_id>/`, with `active.json` pointing at the newest run.
+Interactive docs are at `/docs`.
+
+| Area | Endpoints |
+| --- | --- |
+| Health | `GET /health` |
+| 46-day outlook | `GET /subseasonal/runs`, `/layer`, `/tiles/{z}/{x}/{y}.png`, `/area-values`, `/sample`, `/area` |
+| Seasonal products | `GET /forecast/products/options`; `GET /forecast/{probability,deterministic}/{active,sample,preview.png,tiles/…}`; `POST /forecast/products/refresh` |
+| Advice and models | `POST /advisory`, `/farmer-advisory`, `/predict`, `/forecast`, `/train` |
+| Batch products | `/nationwide/*`, `/seasonal-map/*` |
+
+**46-day layers:**
+
+| Layer | Periods |
+| --- | --- |
+| `rainfall`, `rainy_days`, `wet_spell_days`, `dry_spell_days` | daily, weekly, total |
+| `onset` | daily (status by day), total (onset date) |
+
+Area means are area-weighted, using district polygons rasterised at 0.01°. Tiles are cached in memory and sent with immutable `Cache-Control` when `run_id` is given. Responses of 1 KB or more are gzip-compressed.
+
+Definitions are in `configs/base.yaml` under `subseasonal:`:
+- **Wet day:** at least 1 mm of rain.
+- **Dry spell:** 5 or more days in a row below 1 mm.
+- **Wet spell:** 3 or more wet days in a row.
+- **Onset:** at least 20 mm within 3 days, with no dry spell longer than 10 days in the next 30.
+
+## 46-day data (IFS-UNet ingest)
+
+Upstream delivers one Africa-wide NetCDF4 file per lead day (`Unet/YYYY-MM-DD/…`, about 53 MB per run). The API never reads these files. Instead, an offline ingest:
+1. validates the run's init time, grid and lead days (at least 7, in a row);
+2. clips small negative values;
+3. writes a compact Ghana artifact (NetCDF3, about 0.45 MB) to `data/artifacts/subseasonal/ifs_unet/<run_id>/`;
+4. points `active.json` at the newest run, and keeps the newest 10 runs.
 
 ```powershell
-pip install -e ".[ingest]"     # adds h5netcdf + h5py; not needed to serve the API
-
-# from a local folder holding YYYY-MM-DD run folders
+python -m pip install -e ".[ingest]"
 python -m cumulus.subseasonal.ingest --source local --path D:\data\Unet --latest
-
-# from Azure Blob Storage (container SAS URL with Read + List)
-$env:CUMULUS_SUBSEASONAL__AZURE_SAS_URL = "https://<account>.blob.core.windows.net/<container>?<sas>"
-python -m cumulus.subseasonal.ingest --source azure --list
-python -m cumulus.subseasonal.ingest --source azure --latest
+python -m cumulus.subseasonal.ingest --source azure --latest     # needs CUMULUS_SUBSEASONAL__AZURE_SAS_URL
 ```
 
-Ingest clips the small negative values the UNet produces, keeps Ghana + 0.5°, validates the
-init time, grid and contiguous lead days (at least 7), and keeps the newest 3 runs. The
-`Ingest IFS-UNet run` GitHub workflow does this daily once the `IFS_UNET_SAS_URL` repository
-secret is set.
-
-Lead day *d* holds rain accumulated from init + (d-1)·24 h to init + d·24 h, so for a 00 UTC
-run day 1 is the init date itself (Ghana is on UTC). Outlook layers use the thresholds in
-`configs/base.yaml` (`subseasonal:`): a wet day is ≥ 1 mm, a dry spell is ≥ 5 consecutive
-days below that, a wet spell is ≥ 3 consecutive wet days; "spell days" count the days that
-fall inside such spells.
-
-| Endpoint | Purpose |
-| --- | --- |
-| `GET /subseasonal/runs` | runs, init time, staleness, national daily/weekly means |
-| `GET /subseasonal/layer` | legend, title, stats and tile URL for `layer` × `aggregation` × `index` |
-| `GET /subseasonal/tiles/{z}/{x}/{y}.png` | map tiles (immutable when `run_id` is given) |
-| `GET /subseasonal/area-values` | area mean of the current layer for every region or district |
-| `GET /subseasonal/sample` / `GET /subseasonal/area` | 46-day series, weekly totals, spells for a point or area |
-
-Layers: `rainfall` (`daily` / `weekly` / `total`), `rainy_days`, `dry_spell_days`,
-`wet_spell_days`. Area means are area-weighted using district polygons rasterised at 0.01°.
+The **Ingest IFS-UNet run** GitHub workflow runs this daily at 06:30 UTC and commits the new artifact. It needs the `IFS_UNET_SAS_URL` repository secret. A run counts as stale after 3 days.
 
 ## Tests
 
@@ -109,19 +94,23 @@ Layers: `rainfall` (`daily` / `weekly` / `total`), `rainy_days`, `dry_spell_days
 python -m pytest
 ```
 
-## Layout
+## Deployment
+
+The `main` branch deploys to Vercel. The root `main.py` adds `src/` to the import path and exposes `cumulus.main:app`. The committed `data/` artifacts are served as they are.
+
+## Project structure
 
 ```
-main.py                 serverless entrypoint (re-exports cumulus.main:app)
-configs/                base.yaml, model.yaml, advisory.yaml, seasonal_map.yaml, locations.yaml
-data/                   committed forecast products, district geojson, sample forecast, baseline model
+main.py              Vercel entrypoint
+configs/             base, model, advisory, seasonal_map and locations YAML
+data/                committed artifacts, district GeoJSON, sample forecast, baseline model
 src/cumulus/
-  main.py               FastAPI app factory
-  settings.py           pydantic-settings configuration
-  api/                  route modules (health, forecast, subseasonal, nationwide, seasonal_map, advisory, training)
-  subseasonal/          IFS-UNet ingest (Azure/local sources), district rasteriser, spell metrics, legends
-  services/             business logic
-  data/ modeling/ ...   loaders, trainer/predictor, advisory rule engines
-scripts/                start-backend-local.ps1, local-dev.ps1, batch/refresh utilities
+  main.py            FastAPI app (CORS, gzip, routers)
+  settings.py        pydantic-settings configuration
+  api/               routes: health, subseasonal, forecast, advisory, farmer_advisory, nationwide, seasonal_map, training
+  subseasonal/       IFS-UNet ingest, district masks, spell/onset metrics, legends
+  services/          business logic
+  advisory/ data/ modeling/ preprocessing/ evaluation/
+scripts/             start-backend-local.ps1, local-dev.ps1, batch and refresh tools
 tests/
 ```

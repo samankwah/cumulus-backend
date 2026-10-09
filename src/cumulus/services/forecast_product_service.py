@@ -2865,6 +2865,7 @@ def _ensure_active_manifest(
         )
     elif not manifest_path.exists():
         if final_source is not None:
+            _require_generation_allowed(settings, selection, view_mode, materialize_missing)
             manifest = _generate_product_artifact(
                 settings,
                 source,
@@ -2939,6 +2940,7 @@ def _ensure_active_manifest(
                 title=str(manifest.get("title") or source.title),
             )
     if final_source is not None and not _manifest_payload_is_available_for_selection(settings, selection, manifest):
+        _require_generation_allowed(settings, selection, view_mode, materialize_missing)
         manifest = _generate_product_artifact(
             settings,
             source,
@@ -3002,6 +3004,25 @@ def _ensure_active_manifest(
             f"Forecast product '{selection.theme}' is not usable for the requested selection."
         )
     return manifest
+
+
+def _require_generation_allowed(
+    settings: Settings,
+    selection: ForecastProductSelection,
+    view_mode: ViewMode,
+    materialize_missing: bool,
+) -> None:
+    """Reads must not write artifacts on a read-only deployment; refresh (materialize) always may."""
+    if materialize_missing or settings.forecast_products.generate_on_read:
+        return
+    raise ForecastProductArtifactsNotAvailableError(
+        _artifacts_not_available_message(
+            selection.theme,
+            view_mode,
+            season_profile=selection.season_profile,
+            subseason=selection.subseason,
+        )
+    )
 
 
 def _selection_metadata(settings: Settings, theme: str) -> dict[str, Any]:

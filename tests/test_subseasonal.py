@@ -310,6 +310,45 @@ def test_retention_keeps_newest_runs_and_active_pointer(settings, monkeypatch, t
     assert json.loads((root / "active.json").read_text())["run_id"] == "ifs_unet_2026092700"
 
 
+def test_reingesting_the_same_run_changes_no_files(settings, tmp_path):
+    _make_run(tmp_path / "src", days=7)
+    source = LocalFolderSource(tmp_path / "src")
+    first = ingest_run(settings, source)
+    root = Path(settings.subseasonal.artifact_dir) / "ifs_unet"
+    snapshot = {path: path.read_bytes() for path in root.rglob("*") if path.is_file()}
+
+    again = ingest_run(settings, source)
+    assert again.unchanged and not again.promoted and again.run_id == first.run_id and again.lead_days == 7
+    assert {path: path.read_bytes() for path in root.rglob("*") if path.is_file()} == snapshot
+
+    # A new lead file upstream means the run changed and is rebuilt; --force rebuilds regardless.
+    _write_lead_file(tmp_path / "src" / "2026-09-25", 8)
+    grown = ingest_run(settings, source)
+    assert not grown.unchanged and grown.lead_days == 8
+    assert not ingest_run(settings, source, force=True).unchanged
+
+
+def test_require_complete_falls_back_to_the_newest_complete_run(settings, monkeypatch, tmp_path):
+    monkeypatch.setattr(settings.subseasonal, "expected_lead_days", 10)
+    _make_run(tmp_path / "src", days=10)
+    _make_run(tmp_path / "src", days=8, init=INIT + pd.Timedelta(days=1))  # still uploading
+    source = LocalFolderSource(tmp_path / "src")
+
+    result = ingest_run(settings, source, require_complete=True)
+    assert result.run_id == "ifs_unet_2026092500" and result.lead_days == 10
+    with pytest.raises(IngestError, match="incomplete"):
+        ingest_run(settings, source, (INIT + pd.Timedelta(days=1)).date(), require_complete=True)
+    # Without the guard the partial run is still accepted (manual ingests).
+    assert ingest_run(settings, source).run_id == "ifs_unet_2026092600"
+
+
+def test_require_complete_without_any_complete_run_fails(settings, monkeypatch, tmp_path):
+    monkeypatch.setattr(settings.subseasonal, "expected_lead_days", 46)
+    _make_run(tmp_path / "src", days=7)
+    with pytest.raises(IngestError, match="No complete run"):
+        ingest_run(settings, LocalFolderSource(tmp_path / "src"), require_complete=True)
+
+
 # --------------------------------------------------------------------------- API
 
 

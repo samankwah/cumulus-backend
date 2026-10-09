@@ -5,10 +5,11 @@ from __future__ import annotations
 from datetime import datetime, UTC
 from pathlib import Path
 
-from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import FileResponse, Response
 
 from cumulus.api.errors import CumulusServiceError
+from cumulus.api.security import require_admin_key, require_legacy_endpoints
 from cumulus.schemas import (
     ForecastDeterministicProductResponse,
     ForecastDeterministicSampleResponse,
@@ -47,13 +48,13 @@ from cumulus.settings import get_settings
 router = APIRouter(tags=["forecast"])
 
 
-@router.post("/predict", response_model=PredictResponse)
+@router.post("/predict", response_model=PredictResponse, dependencies=[Depends(require_legacy_endpoints)])
 def predict_endpoint(request: PointRequest) -> PredictResponse:
     result = predict_for_point(get_settings(), request)
     return build_predict_response(result)
 
 
-@router.post("/forecast", response_model=ForecastResponse)
+@router.post("/forecast", response_model=ForecastResponse, dependencies=[Depends(require_legacy_endpoints), Depends(require_admin_key)])
 def forecast_endpoint(request: ForecastRequest) -> ForecastResponse:
     try:
         results, metadata = generate_forecast(
@@ -85,7 +86,7 @@ def forecast_endpoint(request: ForecastRequest) -> ForecastResponse:
     )
 
 
-@router.get("/forecast/raster", response_model=ForecastRasterMetadataResponse)
+@router.get("/forecast/raster", response_model=ForecastRasterMetadataResponse, dependencies=[Depends(require_legacy_endpoints)])
 def forecast_raster_metadata_endpoint(
     variable: str = Query(default="rainfall_daily_mm"),
     horizon_day: int = Query(default=1, ge=1),
@@ -100,7 +101,7 @@ def forecast_raster_metadata_endpoint(
     return ForecastRasterMetadataResponse(**payload)
 
 
-@router.get("/forecast/raster/tiles/{z}/{x}/{y}.png")
+@router.get("/forecast/raster/tiles/{z}/{x}/{y}.png", dependencies=[Depends(require_legacy_endpoints)])
 def forecast_raster_tile_endpoint(
     z: int,
     x: int,
@@ -121,7 +122,7 @@ def forecast_raster_tile_endpoint(
     return Response(content=png_bytes, media_type="image/png")
 
 
-@router.get("/forecast/raster/sample", response_model=ForecastRasterSampleResponse)
+@router.get("/forecast/raster/sample", response_model=ForecastRasterSampleResponse, dependencies=[Depends(require_legacy_endpoints)])
 def forecast_raster_sample_endpoint(
     latitude: float = Query(..., ge=-90.0, le=90.0),
     longitude: float = Query(..., ge=-180.0, le=180.0),
@@ -140,7 +141,7 @@ def forecast_raster_sample_endpoint(
     return ForecastRasterSampleResponse(**payload)
 
 
-@router.post("/forecast/products/refresh", response_model=ForecastProductRefreshResponse)
+@router.post("/forecast/products/refresh", response_model=ForecastProductRefreshResponse, dependencies=[Depends(require_admin_key)])
 def forecast_product_refresh_endpoint(
     theme: str | None = Query(default=None),
 ) -> ForecastProductRefreshResponse:

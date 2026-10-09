@@ -190,6 +190,9 @@ class ForecastProductConfig(BaseModel):
     freshness_threshold_hours: int = 18
     source_label: str = "Cumulus Bridge Product"
     generation_backend: str = "bridge_generated"
+    # Whether GET requests may (re)build a missing or stale artifact from local sources. Off on
+    # serverless runtimes, whose filesystem is read-only; POST /forecast/products/refresh always can.
+    generate_on_read: bool = True
     daily_corrected_dir: Path = DEFAULT_FORECAST_PRODUCT_DAILY_CORRECTED_DIR
     daily_forecast_glob: str = "forecast_*_PRCP_*Ic.nc"
     derived_min_member_count: int = 2
@@ -336,6 +339,8 @@ class SubseasonalConfig(BaseModel):
     onset_guard_days: int = 30
     onset_guard_max_dry_days: int = 10
     min_lead_days: int = 7
+    # A full upstream run; `ingest --require-complete` waits until a run has this many leads.
+    expected_lead_days: int = 46
     retention_runs: int = 10
     stale_after_days: int = 3
     raw_cache_dir: Path | None = None
@@ -376,6 +381,13 @@ class Settings(BaseSettings):
     api_version: str = "0.1.0"
     log_level: str = "INFO"
     time_zone: str = "UTC"
+    # Endpoints that change data or run heavy jobs need this key in the X-API-Key header. With no
+    # key set they are hidden (404) unless allow_unauthenticated_admin is on (local dev, tests).
+    admin_api_key: str | None = None
+    allow_unauthenticated_admin: bool = False
+    # The retired random-forest/ERA5 stack (/predict, /advisory, POST /forecast, /forecast/raster,
+    # /train, /nationwide, /seasonal-map). Its inputs are not deployed, so it is off by default.
+    enable_legacy_endpoints: bool = False
     # The str arm lets pydantic-settings pass comma-separated env values through to the validator.
     cors_allowed_origins: list[str] | str = Field(default_factory=lambda: list(DEFAULT_CORS_ALLOWED_ORIGINS))
     default_forecast_source: str | None = "era5"
@@ -525,6 +537,8 @@ def _apply_serverless_defaults(payload: dict[str, Any]) -> None:
     seasonal_map = _as_mutable_mapping(payload, "seasonal_map")
     if "CUMULUS_SEASONAL_MAP__DISTRICT_GEOJSON_PATH" not in os.environ:
         seasonal_map["district_geojson_path"] = DEFAULT_BACKEND_DISTRICT_GEOJSON_PATH
+    if "CUMULUS_FORECAST_PRODUCTS__GENERATE_ON_READ" not in os.environ:
+        _as_mutable_mapping(payload, "forecast_products")["generate_on_read"] = False
 
 
 def _as_mutable_mapping(payload: dict[str, Any], key: str) -> dict[str, Any]:

@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 
+from cumulus.api.security import require_admin_key, require_legacy_endpoints
 from cumulus.schemas import (
     NationwideGeographySummaryResponse,
     NationwideLocationPageResponse,
@@ -17,10 +18,10 @@ from cumulus.services.nationwide_service import (
 )
 from cumulus.settings import get_settings
 
-router = APIRouter(tags=["nationwide"])
+router = APIRouter(tags=["nationwide"], dependencies=[Depends(require_legacy_endpoints)])
 
 
-@router.post("/nationwide/generate", response_model=NationwideRunResponse)
+@router.post("/nationwide/generate", response_model=NationwideRunResponse, dependencies=[Depends(require_admin_key)])
 def nationwide_generate_endpoint(
     horizon_days: int | None = Query(default=None, ge=1),
     forecast_source: str | None = Query(default=None),

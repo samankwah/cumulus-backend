@@ -1,22 +1,34 @@
 name: Ingest IFS-UNet run
 
-# Pulls the newest IFS-UNet sub-seasonal run from Azure Blob Storage, converts it into the
-# compact Ghana artifact under data/artifacts/subseasonal/ and commits it, which redeploys the API.
+# Pulls the newest complete IFS-UNet sub-seasonal run from Azure Blob Storage, converts it into
+# the compact Ghana artifact under data/artifacts/subseasonal/ and commits it, which redeploys the
+# API. A run that was already ingested from the same files changes nothing, so the job only
+# commits (and redeploys) when upstream has published something new.
 #
 # Requires the repository secret IFS_UNET_SAS_URL: a container SAS URL with Read + List
 # permission, e.g. https://<account>.blob.core.windows.net/<container>?sv=...&sig=...
+# Without the secret the job skips with a warning. Once it is set, a failed run opens (or
+# comments on) an issue labelled "ingest-failure".
 
 on:
   schedule:
-    - cron: "30 6 * * *" # daily, 06:30 UTC
+    # Upstream upload time varies; check three times a day. Unchanged runs are no-ops.
+    - cron: "30 6 * * *"
+    - cron: "30 12 * * *"
+    - cron: "30 18 * * *"
   workflow_dispatch:
     inputs:
       init_date:
-        description: "Run to ingest (YYYY-MM-DD). Leave empty for the latest."
+        description: "Run to ingest (YYYY-MM-DD). Leave empty for the newest complete run."
         required: false
+      force:
+        description: "Rebuild the artifact even if the run was already ingested."
+        type: boolean
+        default: false
 
 permissions:
   contents: write
+  issues: write
 
 concurrency:
   group: ingest-ifs-unet
@@ -27,9 +39,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
           cache: pip
@@ -38,33 +50,60 @@ jobs:
         run: pip install -e ".[ingest]"
 
       - name: Ingest
+        id: ingest
         env:
           CUMULUS_SUBSEASONAL__AZURE_SAS_URL: ${{ secrets.IFS_UNET_SAS_URL }}
           INIT_DATE: ${{ github.event.inputs.init_date }}
+          FORCE: ${{ github.event.inputs.force }}
         run: |
           if [ -z "$CUMULUS_SUBSEASONAL__AZURE_SAS_URL" ]; then
-            echo "::error::Repository secret IFS_UNET_SAS_URL is not set."
-            exit 1
+            # Not configured yet: skip quietly instead of failing (and opening an issue) on every run.
+            echo "::warning::Repository secret IFS_UNET_SAS_URL is not set; skipping ingest."
+            exit 0
           fi
+          args=(--source azure)
           if [ -n "$INIT_DATE" ]; then
-            python -m cumulus.subseasonal.ingest --source azure --init-date "$INIT_DATE"
+            args+=(--init-date "$INIT_DATE")
           else
-            python -m cumulus.subseasonal.ingest --source azure --latest
+            args+=(--latest --require-complete)
+          fi
+          if [ "$FORCE" = "true" ]; then
+            args+=(--force)
+          fi
+          python -m cumulus.subseasonal.ingest "${args[@]}"
+          if [ -n "$(git status --porcelain data/artifacts/subseasonal)" ]; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "No new run."
           fi
 
       - name: Test
+        if: steps.ingest.outputs.changed == 'true'
         run: |
           pip install -e ".[dev]"
           python -m pytest -q tests/test_subseasonal.py
 
       - name: Commit artifact
+        if: steps.ingest.outputs.changed == 'true'
         run: |
-          if [ -z "$(git status --porcelain data/artifacts/subseasonal)" ]; then
-            echo "No new run."
-            exit 0
-          fi
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add -A data/artifacts/subseasonal
           git commit -m "Ingest IFS-UNet run $(python -c 'import json;print(json.load(open("data/artifacts/subseasonal/ifs_unet/active.json"))["run_id"])')"
+          git pull --rebase origin "${GITHUB_REF_NAME}"
           git push
+
+      - name: Report failure
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          body="IFS-UNet ingest failed: $RUN_URL. If the log shows HTTP 401/403, the IFS_UNET_SAS_URL secret has likely expired."
+          number=$(gh issue list --label ingest-failure --state open --json number --jq '.[0].number')
+          if [ -n "$number" ]; then
+            gh issue comment "$number" --body "$body"
+          else
+            gh label create ingest-failure --color B60205 --description "Scheduled IFS-UNet ingest failed" 2>/dev/null || true
+            gh issue create --title "IFS-UNet ingest is failing" --label ingest-failure --body "$body"
+          fi

@@ -138,6 +138,7 @@ subseasonal:
   onset_guard_days: 30
   onset_guard_max_dry_days: 10
   min_lead_days: 7
+  expected_lead_days: 46
   retention_runs: 10
   stale_after_days: 3
   azure_prefix: Unet/

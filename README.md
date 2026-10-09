@@ -19,7 +19,6 @@ Requires Python 3.11 or later.
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 python -m pip install -e ".[dev]"
-copy .env.example .env
 python -m uvicorn cumulus.main:app --app-dir src --port 8000   # http://127.0.0.1:8000/docs
 ```
 
@@ -35,7 +34,7 @@ Optional extras:
 
 ## Configuration
 
-Environment variables use the `CUMULUS_` prefix (with `__` for nested settings) and override `configs/*.yaml`. Relative paths resolve from the repo root. See `.env.example`.
+Environment variables use the `CUMULUS_` prefix (with `__` for nested settings) and override `configs/*.yaml`. They are read from the process environment: set them in your shell (`$env:CUMULUS_…="…"`) or in the Vercel project settings. A `.env` file is **not** loaded. `.env.example` lists the variables for reference. With no variables set, every path defaults to this repo.
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
@@ -44,6 +43,10 @@ Environment variables use the `CUMULUS_` prefix (with `__` for nested settings) 
 | `CUMULUS_CORS_ALLOWED_ORIGINS` | — | Extra browser origins, comma-separated. These are always allowed: `localhost:3000`, `127.0.0.1:3000`, `https://cumulus-gh.vercel.app` and that project's Vercel preview URLs. |
 | `CUMULUS_DEFAULT_STATION_PATH` | `data/raw/stations/Rainfall_data.xlsx` | Station workbook, used only by `POST /train`. |
 | `CUMULUS_SUBSEASONAL__AZURE_SAS_URL` | — | Container SAS URL (Read + List) for the 46-day ingest. Never commit it. |
+| `CUMULUS_ADMIN_API_KEY` | — | Key for admin endpoints, sent as the `X-API-Key` header. When unset, those endpoints return 404. |
+| `CUMULUS_ALLOW_UNAUTHENTICATED_ADMIN` | `false` | Opens the admin endpoints without a key. For local development only. |
+| `CUMULUS_ENABLE_LEGACY_ENDPOINTS` | `false` | Turns the retired random-forest/ERA5 endpoints back on. Their inputs are not deployed. |
+| `CUMULUS_FORECAST_PRODUCTS__GENERATE_ON_READ` | `true` (`false` on Vercel) | Lets GET requests rebuild missing seasonal artifacts from local sources. |
 
 ## API
 
@@ -51,11 +54,13 @@ Interactive docs are at `/docs`.
 
 | Area | Endpoints |
 | --- | --- |
-| Health | `GET /health` |
+| Health | `GET /health` (cheap liveness check); `GET /health/details` (admin: data sources and server paths) |
 | 46-day outlook | `GET /subseasonal/runs`, `/layer`, `/tiles/{z}/{x}/{y}.png`, `/area-values`, `/sample`, `/area` |
-| Seasonal products | `GET /forecast/products/options`; `GET /forecast/{probability,deterministic}/{active,sample,preview.png,tiles/…}`; `POST /forecast/products/refresh` |
-| Advice and models | `POST /advisory`, `/farmer-advisory`, `/predict`, `/forecast`, `/train` |
-| Batch products | `/nationwide/*`, `/seasonal-map/*` |
+| Seasonal products | `GET /forecast/products/options`; `GET /forecast/{probability,deterministic}/{active,sample,preview.png,tiles/…}`; `POST /forecast/products/refresh` (admin) |
+| Farmer advice | `POST /farmer-advisory` (rule-based, stateless) |
+| Legacy, off by default | `POST /predict`, `/advisory`, `/advisory/legacy`, `/forecast` (admin), `/train` (admin); `GET /forecast/raster/*`; `/nationwide/*` and `/seasonal-map/*` (their `generate`/`refresh` are admin) |
+
+"Admin" means the request needs `X-API-Key: $CUMULUS_ADMIN_API_KEY`. The legacy endpoints return 404 unless `CUMULUS_ENABLE_LEGACY_ENDPOINTS=true`.
 
 **46-day layers:**
 
@@ -75,18 +80,26 @@ Definitions are in `configs/base.yaml` under `subseasonal:`:
 ## 46-day data (IFS-UNet ingest)
 
 Upstream delivers one Africa-wide NetCDF4 file per lead day (`Unet/YYYY-MM-DD/…`, about 53 MB per run). The API never reads these files. Instead, an offline ingest:
-1. validates the run's init time, grid and lead days (at least 7, in a row);
+1. validates the run's init time, grid and lead days (at least 7, in a row; with `--require-complete`, all 46);
 2. clips small negative values;
 3. writes a compact Ghana artifact (NetCDF3, about 0.45 MB) to `data/artifacts/subseasonal/ifs_unet/<run_id>/`;
 4. points `active.json` at the newest run, and keeps the newest 10 runs.
 
+If a run was already ingested from the same lead files, the ingest does nothing: no download, and no files change. `--force` rebuilds it anyway.
+
 ```powershell
 python -m pip install -e ".[ingest]"
 python -m cumulus.subseasonal.ingest --source local --path D:\data\Unet --latest
-python -m cumulus.subseasonal.ingest --source azure --latest     # needs CUMULUS_SUBSEASONAL__AZURE_SAS_URL
+python -m cumulus.subseasonal.ingest --source azure --latest --require-complete     # needs CUMULUS_SUBSEASONAL__AZURE_SAS_URL
 ```
 
-The **Ingest IFS-UNet run** GitHub workflow runs this daily at 06:30 UTC and commits the new artifact. It needs the `IFS_UNET_SAS_URL` repository secret. A run counts as stale after 3 days.
+The **Ingest IFS-UNet run** GitHub workflow runs at 06:30, 12:30 and 18:30 UTC with `--latest --require-complete`.
+- If a run is still uploading, it falls back to the newest complete run.
+- It commits, which redeploys the API, only when a new run has landed.
+- If it fails, it opens or updates an `ingest-failure` issue. An HTTP 401/403 usually means the SAS URL has expired.
+- It needs the `IFS_UNET_SAS_URL` repository secret. Until that is set, every run skips with a warning instead of failing.
+
+A run counts as stale after 3 days.
 
 ## Tests
 

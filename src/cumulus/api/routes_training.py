@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 
+from cumulus.api.security import require_admin_key, require_legacy_endpoints
 from cumulus.schemas import TrainRequest, TrainResponse
 from cumulus.settings import get_settings
 
-router = APIRouter(tags=["training"])
+router = APIRouter(tags=["training"], dependencies=[Depends(require_legacy_endpoints), Depends(require_admin_key)])
 
 
 @router.post("/train", response_model=TrainResponse)

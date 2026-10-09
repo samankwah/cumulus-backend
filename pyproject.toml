@@ -8,19 +8,21 @@ version = "0.1.0"
 description = "Baseline weather downscaling and agro-advisory backend for Ghana."
 readme = "README.md"
 requires-python = ">=3.11"
+# Upper bounds stop a deploy from silently picking up an untested major release
+# (last verified: numpy 2.5, pandas 3.0, xarray 2026.9, scikit-learn 1.9, fastapi 0.143).
 dependencies = [
-  "fastapi>=0.115.0",
-  "joblib>=1.4.0",
-  "numpy>=1.26.0",
-  "openpyxl>=3.1.0",
-  "pandas>=2.2.0",
-  "pydantic>=2.8.0",
-  "pydantic-settings>=2.3.0",
-  "pyyaml>=6.0.0",
-  "scikit-learn>=1.5.0",
-  "scipy>=1.11.0",
-  "uvicorn>=0.30.0",
-  "xarray>=2024.6.0",
+  "fastapi>=0.115.0,<1",
+  "joblib>=1.4.0,<2",
+  "numpy>=1.26.0,<3",
+  "openpyxl>=3.1.0,<4",
+  "pandas>=2.2.0,<4",
+  "pydantic>=2.8.0,<3",
+  "pydantic-settings>=2.3.0,<3",
+  "pyyaml>=6.0.0,<7",
+  "scikit-learn>=1.5.0,<2",
+  "scipy>=1.11.0,<2",
+  "uvicorn>=0.30.0,<1",
+  "xarray>=2024.6.0,<2027",
 ]
 
 [project.optional-dependencies]

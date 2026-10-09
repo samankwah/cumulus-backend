@@ -29,7 +29,7 @@ class ForecastSourceRequest(SchemaModel):
 
 
 class ForecastRequest(SchemaModel):
-    locations: list[LocationRequest]
+    locations: list[LocationRequest] = Field(min_length=1, max_length=500)
     forecast_source: ForecastSourceRequest
     horizon_days: int = 14
 

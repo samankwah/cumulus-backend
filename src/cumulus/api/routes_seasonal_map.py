@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Depends, Query
 
+from cumulus.api.security import require_admin_key, require_legacy_endpoints
 from cumulus.schemas import (
     SeasonalDeterministicMapProductResponse,
     SeasonalMapOptionsResponse,
@@ -21,10 +22,10 @@ from cumulus.services.seasonal_map_service import (
 )
 from cumulus.settings import get_settings
 
-router = APIRouter(tags=["seasonal-map"])
+router = APIRouter(tags=["seasonal-map"], dependencies=[Depends(require_legacy_endpoints)])
 
 
-@router.post("/seasonal-map/generate", response_model=SeasonalMapRunResponse)
+@router.post("/seasonal-map/generate", response_model=SeasonalMapRunResponse, dependencies=[Depends(require_admin_key)])
 def seasonal_map_generate_endpoint(
     theme: str = Query(...),
     season_profile: str = Query(...),
@@ -81,7 +82,7 @@ def seasonal_map_deterministic_active_endpoint(
     return SeasonalDeterministicMapProductResponse(**payload)
 
 
-@router.post("/seasonal-map/refresh", response_model=SeasonalMapRefreshResponse)
+@router.post("/seasonal-map/refresh", response_model=SeasonalMapRefreshResponse, dependencies=[Depends(require_admin_key)])
 def seasonal_map_refresh_endpoint(
     theme: str | None = Query(default=None),
     season_profile: str | None = Query(default=None),

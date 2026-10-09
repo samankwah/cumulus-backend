@@ -35,7 +35,7 @@ import xarray as xr
 
 from cumulus.settings import Settings, get_settings
 from cumulus.subseasonal import geomask
-from cumulus.subseasonal.sources import AzureBlobSasSource, LocalFolderSource, RunSource, SourceError
+from cumulus.subseasonal.sources import AzureBlobSasSource, LeadFile, LocalFolderSource, RunSource, SourceError
 
 ARTIFACT_FILE_NAME = "rainfall.nc"
 MANIFEST_FILE_NAME = "manifest.json"
@@ -56,6 +56,8 @@ class IngestResult:
     manifest_path: Path
     promoted: bool
     removed_runs: tuple[str, ...]
+    # True when the run was already ingested from the same files and nothing was rewritten.
+    unchanged: bool = False
 
 
 def run_id_for(source_id: str, init_time: datetime) -> str:
@@ -87,13 +89,27 @@ def ingest_run(
     init_date: date | None = None,
     *,
     promote: bool = True,
+    require_complete: bool = False,
+    force: bool = False,
 ) -> IngestResult:
+    """Ingest ``init_date`` (default: the newest run) and optionally make it active.
+
+    ``require_complete`` skips runs still being uploaded: without ``init_date`` it falls back to the
+    newest run that has all ``expected_lead_days`` leads. Unless ``force`` is set, a run already
+    ingested from the same files is left untouched, so a scheduled job that finds nothing new
+    produces no file changes (and no commit).
+    """
     runs = source.list_runs()
     if not runs:
         raise IngestError(f"No runs found at {source.label}.")
-    target_date = init_date or runs[-1]
-    if target_date not in runs:
-        raise IngestError(f"Run {target_date.isoformat()} not found at {source.label}.")
+    if init_date is not None and init_date not in runs:
+        raise IngestError(f"Run {init_date.isoformat()} not found at {source.label}.")
+    target_date, lead_files = _select_run(settings, source, runs, init_date, require_complete=require_complete)
+
+    if not force:
+        existing = _unchanged_run(settings, lead_files)
+        if existing is not None:
+            return _existing_result(settings, existing, promote=promote)
 
     raw_cache = Path(settings.subseasonal.raw_cache_dir or Path(settings.raw_data_dir) / settings.subseasonal.source_id)
     paths = source.fetch_run(target_date, raw_cache)
@@ -125,6 +141,70 @@ def ingest_run(
         manifest_path=manifest_path,
         promoted=promoted,
         removed_runs=removed,
+    )
+
+
+def _select_run(
+    settings: Settings,
+    source: RunSource,
+    runs: list[date],
+    init_date: date | None,
+    *,
+    require_complete: bool,
+) -> tuple[date, list[LeadFile]]:
+    expected = int(settings.subseasonal.expected_lead_days)
+    candidates = [init_date] if init_date is not None else list(reversed(runs))
+    for candidate in candidates:
+        lead_files = source.list_lead_files(candidate)
+        if not require_complete or len(lead_files) >= expected:
+            return candidate, lead_files
+        print(f"{candidate.isoformat()}: {len(lead_files)}/{expected} lead files, still uploading; skipped.", file=sys.stderr)
+    if init_date is not None:
+        raise IngestError(f"Run {init_date.isoformat()} is incomplete (fewer than {expected} lead files).")
+    raise IngestError(f"No complete run (with {expected} lead files) at {source.label} yet.")
+
+
+def _unchanged_run(settings: Settings, lead_files: list[LeadFile]) -> str | None:
+    """The run id when this exact set of lead files was already ingested, else None."""
+    if not lead_files or len({(item.init_date, item.init_hour) for item in lead_files}) != 1:
+        return None
+    first = lead_files[0]
+    init_time = datetime(first.init_date.year, first.init_date.month, first.init_date.day, first.init_hour, tzinfo=UTC)
+    run_id = run_id_for(settings.subseasonal.source_id, init_time)
+    run_dir = source_dir(settings) / run_id
+    manifest_path = run_dir / MANIFEST_FILE_NAME
+    if not (manifest_path.exists() and (run_dir / ARTIFACT_FILE_NAME).exists()):
+        return None
+    try:
+        recorded = json.loads(manifest_path.read_text(encoding="utf-8")).get("source_files") or []
+    except (OSError, json.JSONDecodeError):
+        return None
+    recorded_sizes = {entry.get("file"): entry.get("size") for entry in recorded}
+    if set(recorded_sizes) != {item.name for item in lead_files}:
+        return None
+    # Older manifests have no sizes; compare them only where both sides know one.
+    for item in lead_files:
+        known = recorded_sizes[item.name]
+        if known is not None and item.size is not None and int(known) != item.size:
+            return None
+    return run_id
+
+
+def _existing_result(settings: Settings, run_id: str, *, promote: bool) -> IngestResult:
+    run_dir = source_dir(settings) / run_id
+    manifest_path = run_dir / MANIFEST_FILE_NAME
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    promoted = promote_run(settings, run_id) if promote else False
+    removed = prune_runs(settings) if promoted else ()
+    return IngestResult(
+        run_id=run_id,
+        init_time=datetime.fromisoformat(manifest["init_time"]),
+        lead_days=len(manifest.get("lead_days") or []),
+        artifact_path=run_dir / ARTIFACT_FILE_NAME,
+        manifest_path=manifest_path,
+        promoted=promoted,
+        removed_runs=removed,
+        unchanged=True,
     )
 
 
@@ -177,7 +257,7 @@ def load_raw_run(paths: list[Path], settings: Settings) -> tuple[xr.Dataset, dic
             fields.append(np.asarray(field.values, dtype=np.float32))
             leads.append(lead_hours)
             init_times.add(init_time)
-            checksums.append({"file": path.name, "sha1": _sha1(path)})
+            checksums.append({"file": path.name, "size": path.stat().st_size, "sha1": _sha1(path)})
 
     if len(init_times) != 1:
         raise IngestError(f"Lead files mix init times: {sorted(t.isoformat() for t in init_times)}.")
@@ -214,7 +294,7 @@ def load_raw_run(paths: list[Path], settings: Settings) -> tuple[xr.Dataset, dic
         "negative_fraction_clipped": round(negative_fraction, 4),
         "max_mm": round(float(np.nanmax(stacked)), 1),
         "checksums": checksums,
-        "expected_lead_days": 46,
+        "expected_lead_days": int(config.expected_lead_days),
     }
     return dataset, details
 
@@ -313,7 +393,10 @@ def list_run_ids(settings: Settings) -> list[str]:
 
 
 def promote_run(settings: Settings, run_id: str) -> bool:
-    """Point active.json at ``run_id`` unless a newer run is already active."""
+    """Point active.json at ``run_id`` unless it or a newer run is already active.
+
+    Returns True only when active.json was rewritten.
+    """
     active_path = source_dir(settings) / ACTIVE_FILE_NAME
     current = None
     if active_path.exists():
@@ -321,6 +404,8 @@ def promote_run(settings: Settings, run_id: str) -> bool:
             current = json.loads(active_path.read_text(encoding="utf-8")).get("run_id")
         except (OSError, json.JSONDecodeError):
             current = None
+    if current == run_id and run_id in list_run_ids(settings):
+        return False
     if current and current > run_id and current in list_run_ids(settings):
         return False
     payload = {"run_id": run_id, "promoted_at": datetime.now(UTC).replace(microsecond=0).isoformat()}
@@ -403,6 +488,12 @@ def main(argv: list[str] | None = None) -> int:
     group.add_argument("--latest", action="store_true", help="Ingest the newest run (default).")
     parser.add_argument("--list", action="store_true", help="List available runs and exit.")
     parser.add_argument("--no-promote", action="store_true", help="Write the artifact without making it active.")
+    parser.add_argument(
+        "--require-complete",
+        action="store_true",
+        help="Skip runs that do not yet have every lead file (still uploading); with --latest, use the newest complete run.",
+    )
+    parser.add_argument("--force", action="store_true", help="Rebuild the artifact even if the run was already ingested.")
     args = parser.parse_args(argv)
 
     settings = get_settings()
@@ -412,10 +503,20 @@ def main(argv: list[str] | None = None) -> int:
             for run in source.list_runs():
                 print(run.isoformat())
             return 0
-        result = ingest_run(settings, source, args.init_date, promote=not args.no_promote)
+        result = ingest_run(
+            settings,
+            source,
+            args.init_date,
+            promote=not args.no_promote,
+            require_complete=args.require_complete,
+            force=args.force,
+        )
     except (SourceError, IngestError) as exc:
         print(f"ingest failed: {exc}", file=sys.stderr)
         return 1
+    if result.unchanged:
+        print(f"{result.run_id}: already ingested from the same files; nothing to do{' [now active]' if result.promoted else ''}.")
+        return 0
     size_kb = result.artifact_path.stat().st_size / 1024
     print(
         f"{result.run_id}: {result.lead_days} lead days -> {result.artifact_path} ({size_kb:.0f} KB)"

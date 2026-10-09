@@ -3,15 +3,16 @@
 from __future__ import annotations
 
 import pandas as pd
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 
 from cumulus.advisory.rules import build_advisory
+from cumulus.api.security import require_legacy_endpoints
 from cumulus.frontend_contract.serializers import serialize_advisory
 from cumulus.schemas import LegacyAdvisoryRequest, PointAdvisoryResponse, PointRequest, SeasonalAdvisoryResponse
 from cumulus.services.advisory_service import generate_point_advisory
 from cumulus.settings import get_settings
 
-router = APIRouter(tags=["advisory"])
+router = APIRouter(tags=["advisory"], dependencies=[Depends(require_legacy_endpoints)])
 
 
 @router.post("/advisory", response_model=PointAdvisoryResponse)

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 
 from cumulus.api.errors import install_exception_handlers
 from cumulus.api.routes_advisory import router as advisory_router
@@ -27,6 +28,7 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+app.add_middleware(GZipMiddleware, minimum_size=1024)
 install_exception_handlers(app)
 app.include_router(health_router)
 app.include_router(training_router)

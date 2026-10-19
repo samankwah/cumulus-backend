@@ -91,13 +91,17 @@ If a run was already ingested from the same lead files, the ingest does nothing:
 python -m pip install -e ".[ingest]"
 python -m cumulus.subseasonal.ingest --source local --path D:\data\Unet --latest
 python -m cumulus.subseasonal.ingest --source azure --latest --require-complete     # needs CUMULUS_SUBSEASONAL__AZURE_SAS_URL
+python -m cumulus.subseasonal.ingest --model aurora --source azure --latest            # another model from subseasonal.models
 ```
 
-The **Ingest IFS-UNet run** GitHub workflow runs at 06:30, 12:30 and 18:30 UTC with `--latest --require-complete`.
+Each model in `subseasonal.models` (`configs/base.yaml`) keeps its runs under `data/artifacts/subseasonal/<model>/`. The first real run of a model deletes any synthetic demo run kept for it (manifest `synthetic: true`).
+
+The **Ingest 46-day runs** GitHub workflow runs at 06:30, 12:30 and 18:30 UTC with `--latest --require-complete`, for every model in turn.
+- Each model needs its own repository secret, a container SAS URL with Read + List: `IFS_UNET_SAS_URL`, `IFS_DIFFUSION_SAS_URL` (can be the same URL as IFS-UNet's if both live in one container) and `AURORA_SAS_URL`. A model without its secret is skipped with a warning.
 - If a run is still uploading, it falls back to the newest complete run.
-- It commits, which redeploys the API, only when a new run has landed.
-- If it fails, it opens or updates an `ingest-failure` issue. An HTTP 401/403 usually means the SAS URL has expired.
-- It needs the `IFS_UNET_SAS_URL` repository secret. Until that is set, every run skips with a warning instead of failing.
+- It commits once for all models, which redeploys the API, only when a new run has landed.
+- If a model fails, the others still commit, then it opens or updates an `ingest-failure` issue. An HTTP 401/403 usually means that SAS URL has expired.
+- Run it by hand from the Actions tab, optionally for one model, one init date, or with `force`.
 
 A run counts as stale after 3 days.
 

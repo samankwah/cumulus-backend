@@ -18,7 +18,7 @@ from pathlib import Path
 import re
 import shutil
 import time
-from typing import Protocol
+from typing import Any, Protocol
 from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qsl, quote, urlencode, urlsplit, urlunsplit
 from urllib.request import Request, urlopen
@@ -43,6 +43,8 @@ class LeadFile:
 
 class RunSource(Protocol):
     label: str
+    # The folder or blob prefix the runs live under; model provenance is parsed from it.
+    location: str
 
     def list_runs(self) -> list[date]: ...
 
@@ -64,6 +66,43 @@ def parse_lead_file(name: str, size: int | None = None) -> LeadFile | None:
     )
 
 
+MODEL_DIR_PATTERN = re.compile(r"^model_(?P<type>.+?unet)(?:_|$)")
+SAMPLER_NUMBER_PATTERN = re.compile(r"^(?P<key>n|cfg|ens)(?P<value>\d+(?:\.\d+)?)$")
+
+
+def parse_model_path(location: str) -> dict[str, Any]:
+    """Model provenance from a path such as ``.../model_<arch>/ckpt-<name>-<step>_<sampler>_n20_cfg3_ens10/``.
+
+    Upstream encodes the downscaling model in the directory names: ``model_*`` names the
+    architecture and training setup, ``ckpt-*`` the checkpoint followed by the sampler settings.
+    Anything missing is left out; the raw directory names are always kept.
+    """
+    segments = [part for part in re.split(r"[\\/]+", location) if part]
+    model_dir = next((part for part in segments if part.startswith("model_")), None)
+    checkpoint_dir = next((part for part in segments if part.startswith("ckpt")), None)
+    found: dict[str, Any] = {}
+    if model_dir:
+        found["model_dir"] = model_dir
+        match = MODEL_DIR_PATTERN.match(model_dir)
+        found["model_type"] = match.group("type") if match else model_dir.removeprefix("model_")
+    if checkpoint_dir:
+        found["checkpoint_dir"] = checkpoint_dir
+        checkpoint, *settings = checkpoint_dir.split("_")
+        found["checkpoint"] = checkpoint
+        step = re.search(r"-(\d+)$", checkpoint)
+        if step:
+            found["checkpoint_step"] = int(step.group(1))
+        for token in settings:
+            number = SAMPLER_NUMBER_PATTERN.match(token)
+            if number is None:
+                found.setdefault("sampler", token)
+                continue
+            value = float(number.group("value"))
+            key = {"n": "sampler_steps", "cfg": "guidance_scale", "ens": "ensemble_size"}[number.group("key")]
+            found[key] = int(value) if value.is_integer() else value
+    return found
+
+
 def _sorted_leads(files: list[LeadFile], init_date: date) -> list[LeadFile]:
     return sorted((item for item in files if item.init_date == init_date), key=lambda item: item.lead_hours)
 
@@ -72,6 +111,7 @@ class LocalFolderSource:
     def __init__(self, root: Path):
         self.root = Path(root)
         self.label = f"local:{self.root.name}"
+        self.location = self.root.resolve().as_posix()
 
     def list_runs(self) -> list[date]:
         if not self.root.is_dir():
@@ -114,6 +154,7 @@ class AzureBlobSasSource:
         self.retries = max(1, retries)
         # Never put the token in labels or logs.
         self.label = f"azure:{self._netloc}{self._container_path}/{self.prefix}"
+        self.location = self.prefix
 
     def list_runs(self) -> list[date]:
         _, prefixes = self._list(self.prefix, delimiter="/")

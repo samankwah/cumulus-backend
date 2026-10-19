@@ -151,6 +151,60 @@ WET_SPELL_DAILY = Legend(
     categorical=True,
 )
 
+# Ensemble runs: the per-day indicators become the share of members (%), so they get a stepped
+# probability ramp instead of a single class. Below 10% is left clear.
+_PROBABILITY_EDGES = [10, 20, 40, 60, 80]
+
+
+def _probability(key: str, colors: list[str], note: str) -> Legend:
+    return Legend(
+        key=key,
+        unit="%",
+        bins=_bins(_PROBABILITY_EDGES, colors, "%"),
+        note=note,
+        below_min_transparent=True,
+    )
+
+
+RAINY_DAY_PROBABILITY = _probability(
+    "rainy_day_probability", ["#cfeefa", "#9bd9f2", "#5cbbe6", "#2f96d4", "#2a6fc0"], "Chance of a rain day; below 10% not shaded"
+)
+DRY_SPELL_PROBABILITY = _probability(
+    "dry_spell_probability", ["#fbe7a6", "#f8cf6a", "#f0a945", "#de7d2c", "#c0531f"], "Chance of being in a dry spell; below 10% not shaded"
+)
+WET_SPELL_PROBABILITY = _probability(
+    "wet_spell_probability", ["#d4f0e3", "#a3dfc8", "#6cc7ac", "#3aa894", "#1f8580"], "Chance of being in a wet spell; below 10% not shaded"
+)
+
+
+RAIN_CHANCE = _probability(
+    "rain_chance", ["#cfeefa", "#9bd9f2", "#5cbbe6", "#2f96d4", "#3e4ca8"], "Share of members at or above the amount; below 10% not shaded"
+)
+
+
+# Extreme rain (24-hour rain at or above the flood-risk threshold). Ensemble: % of members, on a
+# yellow-to-purple warning ramp starting at 5%. Single run: the threshold is reached or not.
+EXTREME_RAIN_PROBABILITY = Legend(
+    key="extreme_rain_probability",
+    unit="%",
+    bins=_bins([5, 10, 20, 40, 60], ["#fde68a", "#fbbf24", "#f97316", "#dc2626", "#7e22ce"], "%"),
+    note="Below 5% not shaded",
+    below_min_transparent=True,
+)
+
+
+def extreme_rain_flag(threshold_mm: float, *, period: str) -> Legend:
+    label = f"{_fmt(threshold_mm)} mm+ in a day" if period == "day" else f"A {_fmt(threshold_mm)} mm+ day"
+    return Legend(
+        key="extreme_rain_flag",
+        unit="%",
+        bins=(LegendBin(lower=50, upper=None, color="#dc2626", label=label),),
+        note=f"Single run: shaded where it forecasts {_fmt(threshold_mm)} mm or more",
+        below_min_transparent=True,
+        categorical=True,
+    )
+
+
 # Per-week counts (0-7 days; the last window may be shorter). Same ramps as the outlook totals.
 _WEEK_DAYS = [1, 2, 3, 4, 5, 6, 7]
 

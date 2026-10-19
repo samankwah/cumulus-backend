@@ -1,4 +1,4 @@
-"""Sub-seasonal (46-day) IFS-UNet rainfall endpoints."""
+"""Sub-seasonal (46-day) rainfall endpoints, for every model in the model picker."""
 
 from __future__ import annotations
 
@@ -8,13 +8,16 @@ from fastapi.responses import Response
 from cumulus.schemas import (
     SubseasonalAreaValuesResponse,
     SubseasonalLayerResponse,
+    SubseasonalModelsResponse,
     SubseasonalRunsResponse,
     SubseasonalSeriesResponse,
 )
 from cumulus.services.subseasonal_service import (
     get_area_values,
     get_layer,
+    list_models,
     list_runs,
+    model_settings,
     render_tile,
     sample_area,
     sample_point,
@@ -28,11 +31,22 @@ router = APIRouter(prefix="/subseasonal", tags=["subseasonal"])
 IMMUTABLE_CACHE = "public, max-age=31536000, immutable"
 SHORT_CACHE = "public, max-age=300"
 
+# Shared query parameters: which model, and (ensemble rainfall) which statistic of its members.
+MODEL_QUERY = Query(default=None, description="Model id from /subseasonal/models; default: the configured model.")
+STAT_QUERY = Query(default=None, description="Ensemble rainfall only: mean, median or chance.")
+THRESHOLD_QUERY = Query(default=None, ge=0, description="With stat=chance: the amount (mm) members must reach.")
+
+
+@router.get("/models", response_model=SubseasonalModelsResponse)
+def subseasonal_models_endpoint(response: Response) -> SubseasonalModelsResponse:
+    response.headers["Cache-Control"] = "public, max-age=60"
+    return SubseasonalModelsResponse(**list_models(get_settings()))
+
 
 @router.get("/runs", response_model=SubseasonalRunsResponse)
-def subseasonal_runs_endpoint(response: Response) -> SubseasonalRunsResponse:
+def subseasonal_runs_endpoint(response: Response, model: str | None = MODEL_QUERY) -> SubseasonalRunsResponse:
     response.headers["Cache-Control"] = "public, max-age=60"
-    return SubseasonalRunsResponse(**list_runs(get_settings()))
+    return SubseasonalRunsResponse(**list_runs(model_settings(get_settings(), model)))
 
 
 @router.get("/layer", response_model=SubseasonalLayerResponse)
@@ -42,9 +56,20 @@ def subseasonal_layer_endpoint(
     aggregation: str | None = Query(default=None),
     index: int | None = Query(default=None, ge=1),
     run_id: str | None = Query(default=None),
+    model: str | None = MODEL_QUERY,
+    stat: str | None = STAT_QUERY,
+    threshold: float | None = THRESHOLD_QUERY,
 ) -> SubseasonalLayerResponse:
     response.headers["Cache-Control"] = IMMUTABLE_CACHE if run_id else SHORT_CACHE
-    payload = get_layer(get_settings(), layer=layer, aggregation=aggregation, index=index, run_id=run_id)
+    payload = get_layer(
+        model_settings(get_settings(), model),
+        layer=layer,
+        aggregation=aggregation,
+        index=index,
+        run_id=run_id,
+        stat=stat,
+        threshold=threshold,
+    )
     return SubseasonalLayerResponse(**payload)
 
 
@@ -57,9 +82,21 @@ def subseasonal_tile_endpoint(
     aggregation: str | None = Query(default=None),
     index: int | None = Query(default=None, ge=1),
     run_id: str | None = Query(default=None),
+    model: str | None = MODEL_QUERY,
+    stat: str | None = STAT_QUERY,
+    threshold: float | None = THRESHOLD_QUERY,
 ) -> Response:
     png_bytes = render_tile(
-        get_settings(), z=z, x=x, y=y, layer=layer, aggregation=aggregation, index=index, run_id=run_id
+        model_settings(get_settings(), model),
+        z=z,
+        x=x,
+        y=y,
+        layer=layer,
+        aggregation=aggregation,
+        index=index,
+        run_id=run_id,
+        stat=stat,
+        threshold=threshold,
     )
     return Response(
         content=png_bytes,
@@ -76,10 +113,20 @@ def subseasonal_area_values_endpoint(
     aggregation: str | None = Query(default=None),
     index: int | None = Query(default=None, ge=1),
     run_id: str | None = Query(default=None),
+    model: str | None = MODEL_QUERY,
+    stat: str | None = STAT_QUERY,
+    threshold: float | None = THRESHOLD_QUERY,
 ) -> SubseasonalAreaValuesResponse:
     response.headers["Cache-Control"] = IMMUTABLE_CACHE if run_id else SHORT_CACHE
     payload = get_area_values(
-        get_settings(), level=level, layer=layer, aggregation=aggregation, index=index, run_id=run_id
+        model_settings(get_settings(), model),
+        level=level,
+        layer=layer,
+        aggregation=aggregation,
+        index=index,
+        run_id=run_id,
+        stat=stat,
+        threshold=threshold,
     )
     return SubseasonalAreaValuesResponse(**payload)
 
@@ -90,9 +137,10 @@ def subseasonal_sample_endpoint(
     latitude: float = Query(..., ge=-90.0, le=90.0),
     longitude: float = Query(..., ge=-180.0, le=180.0),
     run_id: str | None = Query(default=None),
+    model: str | None = MODEL_QUERY,
 ) -> SubseasonalSeriesResponse:
     response.headers["Cache-Control"] = IMMUTABLE_CACHE if run_id else SHORT_CACHE
-    payload = sample_point(get_settings(), latitude=latitude, longitude=longitude, run_id=run_id)
+    payload = sample_point(model_settings(get_settings(), model), latitude=latitude, longitude=longitude, run_id=run_id)
     return SubseasonalSeriesResponse(**payload)
 
 
@@ -102,7 +150,8 @@ def subseasonal_area_endpoint(
     level: str = Query(...),
     name: str = Query(..., min_length=1),
     run_id: str | None = Query(default=None),
+    model: str | None = MODEL_QUERY,
 ) -> SubseasonalSeriesResponse:
     response.headers["Cache-Control"] = IMMUTABLE_CACHE if run_id else SHORT_CACHE
-    payload = sample_area(get_settings(), level=level, name=name, run_id=run_id)
+    payload = sample_area(model_settings(get_settings(), model), level=level, name=name, run_id=run_id)
     return SubseasonalSeriesResponse(**payload)

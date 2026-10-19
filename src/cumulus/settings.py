@@ -323,6 +323,18 @@ class SubseasonalBoundsConfig(BaseModel):
     longitude_max: float = 2.0
 
 
+class SubseasonalModelConfig(BaseModel):
+    """One forecast model the viewer can show; its runs live under ``<artifact_dir>/<model id>/``."""
+
+    model_label: str
+    source_label: str
+    azure_prefix: str | None = None
+    # Container SAS URL when this model's files live in a different container; else the shared one.
+    azure_sas_url: str | None = None
+    local_source_dir: Path | None = None
+    description: str | None = None
+
+
 class SubseasonalConfig(BaseModel):
     artifact_dir: Path = DEFAULT_SUBSEASONAL_ARTIFACT_DIR
     source_id: str = "ifs_unet"
@@ -338,6 +350,8 @@ class SubseasonalConfig(BaseModel):
     onset_window_days: int = 3
     onset_guard_days: int = 30
     onset_guard_max_dry_days: int = 10
+    # "Extreme rain" layer: 24-hour rainfall at or above this (flood risk).
+    extreme_rain_mm: float = 50.0
     min_lead_days: int = 7
     # A full upstream run; `ingest --require-complete` waits until a run has this many leads.
     expected_lead_days: int = 46
@@ -347,6 +361,9 @@ class SubseasonalConfig(BaseModel):
     local_source_dir: Path | None = None
     azure_sas_url: str | None = None
     azure_prefix: str = "Unet/"
+    # Models offered in the viewer's model picker, by id. ``source_id`` is the default model; a
+    # model listed here only appears in the picker once it has an ingested run.
+    models: dict[str, SubseasonalModelConfig] = Field(default_factory=dict)
 
 
 class ModelParamsConfig(BaseModel):

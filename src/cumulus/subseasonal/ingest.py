@@ -158,11 +158,13 @@ def ingest_run(
         dataset, details, out_dir, settings, run_id=run_id, source_label=source.label, provenance=provenance
     )
 
-    removed: tuple[str, ...] = ()
+    # The first real run of a model retires any synthetic demo runs kept for it. Done before
+    # promoting, so a real run older than the demo still becomes the active one.
+    removed: tuple[str, ...] = drop_synthetic_runs(settings, keep=run_id)
     promoted = False
     if promote:
         promoted = promote_run(settings, run_id)
-        removed = prune_runs(settings)
+        removed += prune_runs(settings)
     # Warm the district raster cache so a fresh deploy never has to build it.
     geomask.load_area_index(
         Path(settings.seasonal_map.district_geojson_path),
@@ -513,6 +515,23 @@ def promote_run(settings: Settings, run_id: str) -> bool:
     temporary.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
     os.replace(temporary, active_path)
     return True
+
+
+def drop_synthetic_runs(settings: Settings, *, keep: str) -> tuple[str, ...]:
+    """Delete this model's synthetic demo runs (manifest ``synthetic: true``), except ``keep``."""
+    removed: list[str] = []
+    for run_id in list_run_ids(settings):
+        if run_id == keep:
+            continue
+        manifest_path = source_dir(settings) / run_id / MANIFEST_FILE_NAME
+        try:
+            synthetic = bool(json.loads(manifest_path.read_text(encoding="utf-8")).get("synthetic"))
+        except (OSError, json.JSONDecodeError):
+            synthetic = False
+        if synthetic:
+            shutil.rmtree(source_dir(settings) / run_id, ignore_errors=True)
+            removed.append(run_id)
+    return tuple(removed)
 
 
 def prune_runs(settings: Settings) -> tuple[str, ...]:

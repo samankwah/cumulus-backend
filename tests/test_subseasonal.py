@@ -710,3 +710,22 @@ def test_ensemble_rainfall_mean_median_and_chance(two_model_client):
     # A single run ignores the statistic.
     single = two_model_client.get("/subseasonal/layer", params={"layer": "rainfall", "stat": "median"}).json()
     assert single["statistic"] == "single"
+
+
+def test_a_real_run_retires_synthetic_demo_runs(settings, tmp_path):
+    from cumulus.subseasonal.ingest import for_model, list_run_ids, source_dir
+
+    diffusion = for_model(settings, "ifs_diffusion")
+    # A demo run issued later than the real one, flagged synthetic.
+    later = pd.Timestamp("2026-10-02T00:00:00")
+    _make_run(tmp_path / "demo", days=7, init=later)
+    demo = ingest_run(diffusion, LocalFolderSource(tmp_path / "demo"))
+    manifest = json.loads(demo.manifest_path.read_text())
+    manifest["synthetic"] = True
+    demo.manifest_path.write_text(json.dumps(manifest))
+
+    _make_ensemble_run(tmp_path / "real", days=7)
+    real = ingest_run(diffusion, LocalFolderSource(tmp_path / "real"))
+    assert demo.run_id in real.removed_runs
+    assert list_run_ids(diffusion) == [real.run_id]
+    assert json.loads((source_dir(diffusion) / "active.json").read_text())["run_id"] == real.run_id

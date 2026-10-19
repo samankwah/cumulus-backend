@@ -654,6 +654,19 @@ def test_models_endpoint_lists_models_with_runs(two_model_client):
     assert two_model_client.get("/subseasonal/runs", params={"model": "aurora"}).status_code == 503
 
 
+def test_synthetic_runs_are_flagged(settings, two_model_client):
+    from cumulus.subseasonal.ingest import for_model, source_dir
+
+    manifest_path = source_dir(for_model(settings, "ifs_diffusion")) / "ifs_diffusion_2026092500" / "manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    assert two_model_client.get("/subseasonal/runs", params={"model": "ifs_diffusion"}).json()["runs"][0]["synthetic"] is False
+    manifest["synthetic"] = True
+    manifest_path.write_text(json.dumps(manifest))
+    assert two_model_client.get("/subseasonal/runs", params={"model": "ifs_diffusion"}).json()["runs"][0]["synthetic"] is True
+    models = {item["id"]: item for item in two_model_client.get("/subseasonal/models").json()["models"]}
+    assert models["ifs_diffusion"]["synthetic"] is True and models["ifs_unet"]["synthetic"] is False
+
+
 def test_ensemble_rainfall_mean_median_and_chance(two_model_client):
     base = {"model": "ifs_diffusion", "layer": "rainfall", "aggregation": "daily", "index": 2}
     mean = two_model_client.get("/subseasonal/layer", params=base).json()

@@ -533,6 +533,8 @@ def run_summary(settings: Settings, run: _SummaryView, *, active: bool) -> dict[
         "model_label": manifest.get("model_label", config.model_label),
         "ensemble": manifest.get("ensemble", "deterministic"),
         "members": run.member_count,
+        # A made-up demo run (not model output), so the viewer can label it.
+        "synthetic": bool(manifest.get("synthetic")),
         "init_time": run.init_time,
         "ingested_at": manifest.get("ingested_at"),
         "provenance": manifest.get("provenance") or {},
@@ -611,6 +613,7 @@ def list_models(settings: Settings) -> dict[str, Any]:
                 "active_run_id": active,
                 "init_time": manifest.get("init_time"),
                 "members": int(manifest.get("members") or 1) if manifest else None,
+                "synthetic": bool(manifest.get("synthetic")),
             }
         )
     return {"default_model": config.source_id, "models": models}

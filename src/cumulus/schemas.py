@@ -769,6 +769,8 @@ class SubseasonalRunResponse(BaseModel):
     model_label: str
     ensemble: str
     members: int = 1
+    # True for a made-up demo run (not model output); the viewer labels it "Demo data".
+    synthetic: bool = False
     init_time: datetime
     ingested_at: datetime | None = None
     provenance: SubseasonalProvenance = Field(default_factory=SubseasonalProvenance)
@@ -798,6 +800,7 @@ class SubseasonalModelOption(BaseModel):
     active_run_id: str | None = None
     init_time: datetime | None = None
     members: int | None = None
+    synthetic: bool = False
 
 
 class SubseasonalModelsResponse(BaseModel):

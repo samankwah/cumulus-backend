@@ -35,7 +35,14 @@ import xarray as xr
 
 from cumulus.settings import Settings, get_settings
 from cumulus.subseasonal import geomask
-from cumulus.subseasonal.sources import AzureBlobSasSource, LeadFile, LocalFolderSource, RunSource, SourceError
+from cumulus.subseasonal.sources import (
+    AzureBlobSasSource,
+    LeadFile,
+    LocalFolderSource,
+    RunSource,
+    SourceError,
+    parse_model_path,
+)
 
 ARTIFACT_FILE_NAME = "rainfall.nc"
 MANIFEST_FILE_NAME = "manifest.json"
@@ -62,6 +69,33 @@ class IngestResult:
 
 def run_id_for(source_id: str, init_time: datetime) -> str:
     return f"{source_id}_{init_time.strftime('%Y%m%d%H')}"
+
+
+class UnknownModelError(ValueError):
+    """Raised for a model id that is not in ``subseasonal.models``."""
+
+
+def for_model(settings: Settings, model: str | None) -> Settings:
+    """Settings for one model of the registry: its id, labels and where its files come from.
+
+    ``None`` (or the default ``source_id``) returns the settings unchanged apart from the default
+    model's registry entry, so callers that know nothing about models keep working.
+    """
+    config = settings.subseasonal
+    model_id = str(model or config.source_id).strip()
+    spec = config.models.get(model_id)
+    if spec is None:
+        if model_id == config.source_id:
+            return settings
+        raise UnknownModelError(f"Unknown model '{model_id}'. Choose one of: {', '.join(config.models) or config.source_id}.")
+    update: dict[str, Any] = {"source_id": model_id, "model_label": spec.model_label, "source_label": spec.source_label}
+    if spec.azure_prefix:
+        update["azure_prefix"] = spec.azure_prefix
+    if spec.azure_sas_url:
+        update["azure_sas_url"] = spec.azure_sas_url
+    if spec.local_source_dir:
+        update["local_source_dir"] = spec.local_source_dir
+    return settings.model_copy(update={"subseasonal": config.model_copy(update=update)})
 
 
 def source_dir(settings: Settings) -> Path:
@@ -119,7 +153,10 @@ def ingest_run(
     dataset, details = load_raw_run(paths, settings)
     run_id = run_id_for(settings.subseasonal.source_id, details["init_time"])
     out_dir = source_dir(settings) / run_id
-    artifact_path, manifest_path = write_artifact(dataset, details, out_dir, settings, run_id=run_id, source_label=source.label)
+    provenance = build_provenance(getattr(source, "location", ""), details.get("source_attrs") or {})
+    artifact_path, manifest_path = write_artifact(
+        dataset, details, out_dir, settings, run_id=run_id, source_label=source.label, provenance=provenance
+    )
 
     removed: tuple[str, ...] = ()
     promoted = False
@@ -224,6 +261,8 @@ def load_raw_run(paths: list[Path], settings: Settings) -> tuple[xr.Dataset, dic
     reference_axes: tuple[np.ndarray, np.ndarray] | None = None
     checksums: list[dict[str, Any]] = []
     variable_name: str | None = None
+    source_attrs: dict[str, str] = {}
+    member_count: int | None = None
 
     for path in sorted(paths):
         with xr.open_dataset(path, engine="h5netcdf") as raw:
@@ -231,6 +270,8 @@ def load_raw_run(paths: list[Path], settings: Settings) -> tuple[xr.Dataset, dic
             if name is None:
                 raise IngestError(f"{path.name}: none of {config.variable_aliases} found (has {list(raw.data_vars)}).")
             variable_name = variable_name or name
+            if not source_attrs:
+                source_attrs = _global_attrs(raw)
             raw = _normalize_coords(raw)
             init_time = _init_time(raw, path)
             lead_hours = _lead_hours(raw, init_time, path)
@@ -239,9 +280,19 @@ def load_raw_run(paths: list[Path], settings: Settings) -> tuple[xr.Dataset, dic
                 if field.sizes["time"] != 1:
                     raise IngestError(f"{path.name}: expected a single time step, found {field.sizes['time']}.")
                 field = field.isel(time=0)
-            extra_dims = set(field.dims) - {"latitude", "longitude"}
+            member_dim = next((dim for dim in MEMBER_DIMS if dim in field.dims), None)
+            if member_dim is not None:
+                field = field.rename({member_dim: "member"}).transpose("member", "latitude", "longitude")
+            extra_dims = set(field.dims) - {"member", "latitude", "longitude"}
             if extra_dims:
                 raise IngestError(f"{path.name}: unexpected dimensions {sorted(extra_dims)} on {name}.")
+            file_members = int(field.sizes.get("member", 1))
+            if member_count is None:
+                member_count = file_members
+            elif file_members != member_count:
+                raise IngestError(f"{path.name}: {file_members} ensemble members, other lead files have {member_count}.")
+            if "member" not in field.dims:
+                field = field.expand_dims("member")
             field = field.sortby("latitude").sortby("longitude")
             field = field.sel(
                 latitude=slice(bounds.latitude_min - 1e-6, bounds.latitude_max + 1e-6),
@@ -273,16 +324,26 @@ def load_raw_run(paths: list[Path], settings: Settings) -> tuple[xr.Dataset, dic
     if len(lead_days) < config.min_lead_days:
         raise IngestError(f"Run has {len(lead_days)} lead days; at least {config.min_lead_days} are required.")
 
-    stacked = np.stack(fields, axis=0)
+    stacked = np.stack(fields, axis=1)  # (member, lead_day, lat, lon)
     negative_fraction = float(np.mean(stacked < 0))
     stacked = np.clip(stacked, 0.0, None)
     # Round to the packing precision now so stats and the stored artifact agree exactly.
     stacked = np.round(stacked / PACK_SCALE) * PACK_SCALE
     assert reference_axes is not None
     init_time = next(iter(init_times))
+    coords: dict[str, Any] = {}
+    if stacked.shape[0] > 1:
+        dims: tuple[str, ...] = ("member", "lead_day", "latitude", "longitude")
+        coords["member"] = np.arange(stacked.shape[0], dtype=np.int32)
+        values = stacked
+    else:
+        # A single run keeps the original 3-D layout, so older readers still open it.
+        dims = ("lead_day", "latitude", "longitude")
+        values = stacked[0]
     dataset = xr.Dataset(
-        {"precip": (("lead_day", "latitude", "longitude"), stacked.astype(np.float32))},
+        {"precip": (dims, values.astype(np.float32))},
         coords={
+            **coords,
             "lead_day": np.asarray(lead_days, dtype=np.int32),
             "latitude": reference_axes[0].astype(np.float32),
             "longitude": reference_axes[1].astype(np.float32),
@@ -295,8 +356,37 @@ def load_raw_run(paths: list[Path], settings: Settings) -> tuple[xr.Dataset, dic
         "max_mm": round(float(np.nanmax(stacked)), 1),
         "checksums": checksums,
         "expected_lead_days": int(config.expected_lead_days),
+        "source_attrs": source_attrs,
+        "members": int(stacked.shape[0]),
     }
     return dataset, details
+
+
+# Names upstream may give the ensemble-member dimension.
+MEMBER_DIMS = ("member", "number", "ensemble", "ens", "realization", "sample")
+MAX_SOURCE_ATTRS = 40
+MAX_SOURCE_ATTR_LENGTH = 500
+
+
+def _global_attrs(raw: xr.Dataset) -> dict[str, str]:
+    """The raw file's global attributes as short strings, kept for provenance."""
+    attrs: dict[str, str] = {}
+    for key, value in list(raw.attrs.items())[:MAX_SOURCE_ATTRS]:
+        if isinstance(value, bytes):
+            value = value.decode("utf-8", "replace")
+        elif isinstance(value, np.ndarray):
+            value = value.tolist()
+        attrs[str(key)] = str(value)[:MAX_SOURCE_ATTR_LENGTH]
+    return attrs
+
+
+def build_provenance(location: str, source_attrs: dict[str, str]) -> dict[str, Any]:
+    """Which downscaling model produced the run: parsed from the source path, plus the raw attributes."""
+    provenance: dict[str, Any] = {"source_path": location} if location else {}
+    provenance.update(parse_model_path(location))
+    if source_attrs:
+        provenance["source_attrs"] = source_attrs
+    return provenance
 
 
 def write_artifact(
@@ -307,6 +397,7 @@ def write_artifact(
     *,
     run_id: str,
     source_label: str,
+    provenance: dict[str, Any] | None = None,
 ) -> tuple[Path, Path]:
     config = settings.subseasonal
     init_time: datetime = details["init_time"]
@@ -321,6 +412,8 @@ def write_artifact(
         }
     )
     out["lead_day"].attrs.update({"long_name": "forecast lead day", "units": "1"})
+    if "member" in out.coords:
+        out["member"].attrs.update({"long_name": "ensemble member", "units": "1"})
     out["latitude"].attrs.update({"units": "degrees_north", "standard_name": "latitude"})
     out["longitude"].attrs.update({"units": "degrees_east", "standard_name": "longitude"})
     out.attrs.update(
@@ -330,6 +423,11 @@ def write_artifact(
             "init_time": init_time.isoformat(),
             "run_id": run_id,
             "Conventions": "CF-1.8",
+            **{
+                key: str(value)
+                for key, value in (provenance or {}).items()
+                if key in {"model_dir", "checkpoint_dir", "model_type", "checkpoint", "sampler"}
+            },
         }
     )
     encoding = {"precip": {"dtype": "int16", "scale_factor": PACK_SCALE, "add_offset": 0.0, "_FillValue": np.int16(-32768)}}
@@ -347,7 +445,8 @@ def write_artifact(
             "source_id": config.source_id,
             "source_label": config.source_label,
             "model_label": config.model_label,
-            "ensemble": "deterministic",
+            "ensemble": "ensemble" if details.get("members", 1) > 1 else "deterministic",
+            "members": int(details.get("members", 1)),
             "variable": "precip",
             "raw_variable": details["variable"],
             "unit": "mm",
@@ -374,6 +473,7 @@ def write_artifact(
             "ingested_at": datetime.now(UTC).replace(microsecond=0).isoformat(),
             "ingested_from": source_label,
             "source_files": details["checksums"],
+            "provenance": provenance or {},
         }
         (staging / MANIFEST_FILE_NAME).write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
         if out_dir.exists():
@@ -481,6 +581,7 @@ def _sha1(path: Path) -> str:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Ingest an IFS-UNet run into a compact Ghana artifact.")
+    parser.add_argument("--model", help="Model id from subseasonal.models (default: subseasonal.source_id).")
     parser.add_argument("--source", choices=["auto", "local", "azure"], default="auto")
     parser.add_argument("--path", type=Path, help="Local folder holding YYYY-MM-DD run folders.")
     group = parser.add_mutually_exclusive_group()
@@ -496,7 +597,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--force", action="store_true", help="Rebuild the artifact even if the run was already ingested.")
     args = parser.parse_args(argv)
 
-    settings = get_settings()
+    try:
+        settings = for_model(get_settings(), args.model)
+    except UnknownModelError as exc:
+        print(f"ingest failed: {exc}", file=sys.stderr)
+        return 1
     try:
         source = build_source(settings, args.source, args.path)
         if args.list:

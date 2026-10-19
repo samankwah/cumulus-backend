@@ -679,6 +679,25 @@ class SubseasonalThresholds(BaseModel):
     onset_window_days: int | None = None
     onset_guard_days: int | None = None
     onset_max_dry_days: int | None = None
+    extreme_rain_mm: float | None = None
+
+
+class SubseasonalSpread(BaseModel):
+    """Ensemble spread of a daily or weekly amount (mm): member min, quartiles, max and mean."""
+
+    min: float | None = None
+    p10: float | None = None
+    p25: float | None = None
+    p50: float | None = None
+    p75: float | None = None
+    p90: float | None = None
+    max: float | None = None
+    mean: float | None = None
+
+
+class SubseasonalSpellChance(BaseModel):
+    dry: float
+    wet: float
 
 
 class SubseasonalDay(BaseModel):
@@ -689,6 +708,19 @@ class SubseasonalDay(BaseModel):
     value: float | None = None
     wet: bool | None = None
     spell: str | None = None
+    # Ensemble runs only: spread across members, and % of members with a rain day / inside a spell.
+    spread: SubseasonalSpread | None = None
+    wet_prob: float | None = None
+    spell_prob: SubseasonalSpellChance | None = None
+    # % of members (0/100 for a single run) with rain at or above the extreme threshold.
+    extreme_prob: float | None = None
+    # Ensemble only: each member's amount (mm).
+    members: list[float | None] | None = None
+    # Cell-by-cell chances averaged over the place (as on the map): % reaching each daily amount,
+    # % with a 50 mm+ day by this date, and % whose running total has reached each whole-run amount.
+    chance: dict[str, float | None] | None = None
+    extreme_by_date: float | None = None
+    total_by_date: dict[str, float | None] | None = None
 
 
 class SubseasonalWeek(BaseModel):
@@ -700,6 +732,10 @@ class SubseasonalWeek(BaseModel):
     days: int
     partial: bool
     value: float | None = None
+    spread: SubseasonalSpread | None = None
+    members: list[float | None] | None = None
+    chance: dict[str, float | None] | None = None
+    extreme_prob: float | None = None
 
 
 class SubseasonalLayerOption(BaseModel):
@@ -709,6 +745,22 @@ class SubseasonalLayerOption(BaseModel):
     aggregations: list[str]
 
 
+class SubseasonalProvenance(BaseModel):
+    """Which downscaling model produced a run, parsed from upstream directory names."""
+
+    source_path: str | None = None
+    model_dir: str | None = None
+    model_type: str | None = None
+    checkpoint_dir: str | None = None
+    checkpoint: str | None = None
+    checkpoint_step: int | None = None
+    sampler: str | None = None
+    sampler_steps: int | None = None
+    guidance_scale: float | None = None
+    ensemble_size: int | None = None
+    source_attrs: dict[str, str] = Field(default_factory=dict)
+
+
 class SubseasonalRunResponse(BaseModel):
     run_id: str
     active: bool
@@ -716,8 +768,10 @@ class SubseasonalRunResponse(BaseModel):
     source_label: str
     model_label: str
     ensemble: str
+    members: int = 1
     init_time: datetime
     ingested_at: datetime | None = None
+    provenance: SubseasonalProvenance = Field(default_factory=SubseasonalProvenance)
     lead_days: int
     expected_lead_days: int
     missing_lead_days: list[int]
@@ -733,6 +787,22 @@ class SubseasonalRunResponse(BaseModel):
     weeks: list[SubseasonalWeek]
     layers: list[SubseasonalLayerOption]
     guidance: str
+
+
+class SubseasonalModelOption(BaseModel):
+    id: str
+    label: str
+    source_label: str
+    description: str | None = None
+    available: bool
+    active_run_id: str | None = None
+    init_time: datetime | None = None
+    members: int | None = None
+
+
+class SubseasonalModelsResponse(BaseModel):
+    default_model: str
+    models: list[SubseasonalModelOption]
 
 
 class SubseasonalRunsResponse(BaseModel):
@@ -787,6 +857,15 @@ class SubseasonalLayerResponse(BaseModel):
     description: str
     # Onset only: % of Ghana where the rains have set in by each day (1..lead_days).
     progress: list[float] | None = None
+    # How members are combined on the map: "single" run, ensemble "mean", or "probability" (% of members).
+    statistic: str = "single"
+    members: int = 1
+    # Ensemble rainfall: the amount a "chance" map counts members against, and the amounts offered.
+    threshold_mm: float | None = None
+    chance_thresholds: list[float] = Field(default_factory=list)
+    # Ensemble rainfall median / chance: the national value per day or week, for the dock timeline.
+    timeline: list[float | None] | None = None
+    timeline_unit: str | None = None
 
 
 class SubseasonalAreaValuesResponse(BaseModel):
@@ -806,6 +885,7 @@ class SubseasonalMetrics(BaseModel):
     wet_spell_days: int
     max_day_mm: float | None = None
     max_day: int | None = None
+    extreme_days: float | None = None
 
 
 class SubseasonalSpell(BaseModel):
@@ -818,15 +898,19 @@ class SubseasonalSpell(BaseModel):
     open_start: bool
     open_end: bool
     total_mm: float | None = None
+    # Ensemble runs only: % of members with a spell overlapping these days.
+    probability: float | None = None
 
 
 class SubseasonalOnset(BaseModel):
     day: int
     date: date
     rain_mm: float | None = None
-    longest_dry_after: int
+    longest_dry_after: int | None = None
     guard_days: int
     provisional: bool
+    # Ensemble runs only: % of members with an onset inside the forecast (day is their median).
+    probability: float | None = None
 
 
 class SubseasonalSeriesResponse(BaseModel):
@@ -851,3 +935,8 @@ class SubseasonalSeriesResponse(BaseModel):
     spells: list[SubseasonalSpell]
     thresholds: SubseasonalThresholds
     guidance: str
+    members: int = 1
+    # Ensemble only: each member's whole-run total (mm).
+    member_totals: list[float | None] | None = None
+    # Whole run, cell by cell and averaged over the place: % reaching each whole-run amount.
+    total_chance: dict[str, float | None] | None = None

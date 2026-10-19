@@ -126,7 +126,7 @@ forecast_products:
         forecast_year: 2026
         title: Seasonal Rainfall Total
 subseasonal:
-  # ECMWF IFS extended-range runs downscaled with a UNet (deterministic, 46 daily leads).
+  # ECMWF IFS extended-range runs downscaled with a UNet (46 daily leads; one run or an ensemble).
   source_id: ifs_unet
   model_label: IFS-UNet
   wet_day_threshold_mm: 1.0
@@ -137,8 +137,27 @@ subseasonal:
   onset_window_days: 3
   onset_guard_days: 30
   onset_guard_max_dry_days: 10
+  # Extreme rain layer: chance of 24-hour rainfall at or above this.
+  extreme_rain_mm: 50.0
   min_lead_days: 7
   expected_lead_days: 46
   retention_runs: 10
   stale_after_days: 3
   azure_prefix: Unet/
+  # The model picker. Runs of each model are kept apart under data/artifacts/subseasonal/<id>/.
+  models:
+    ifs_unet:
+      model_label: IFS-UNet
+      source_label: ECMWF IFS · UNet downscaled
+      azure_prefix: Unet/
+      description: ECMWF IFS extended range, downscaled to 0.1° with a deterministic UNet.
+    ifs_diffusion:
+      model_label: IFS-Diffusion
+      source_label: ECMWF IFS · diffusion UNet downscaled (ensemble)
+      azure_prefix: Diffusion/
+      description: ECMWF IFS extended range, downscaled with a diffusion UNet; one run per ensemble member.
+    aurora:
+      model_label: Aurora
+      source_label: Aurora · downscaled
+      azure_prefix: aurora/
+      description: Aurora forecasts downscaled for West Africa. Data to be supplied by the modelling team.

@@ -13,7 +13,7 @@ from fastapi.testclient import TestClient
 
 from cumulus.subseasonal import legends, metrics
 from cumulus.subseasonal.ingest import IngestError, ingest_run, load_raw_run
-from cumulus.subseasonal.sources import AzureBlobSasSource, LocalFolderSource, parse_lead_file
+from cumulus.subseasonal.sources import AzureBlobSasSource, LocalFolderSource, parse_lead_file, parse_model_path
 from cumulus.settings import get_settings
 
 pytest.importorskip("h5netcdf")
@@ -262,6 +262,30 @@ def test_ingest_clips_subsets_and_writes_netcdf3_artifact(settings, tmp_path):
     assert active["run_id"] == result.run_id
 
 
+def test_parse_model_path_reads_model_checkpoint_and_sampler():
+    found = parse_model_path(
+        "Unet/model_diffusion_unet_precip_input_output_residual_shiftedlog_calibrated_silu_selfcond_precip24h_only/"
+        "ckpt-diffusion-722-precip-fs64-lr1e-4-100k-100000_heun_n20_cfg3_ens10/"
+    )
+    assert found["model_type"] == "diffusion_unet"
+    assert found["checkpoint"] == "ckpt-diffusion-722-precip-fs64-lr1e-4-100k-100000"
+    assert found["checkpoint_step"] == 100000
+    assert (found["sampler"], found["sampler_steps"], found["guidance_scale"], found["ensemble_size"]) == ("heun", 20, 3, 10)
+    assert parse_model_path("Unet/") == {}
+    assert parse_model_path(r"C:\data\model_det_unet\Unet")["model_type"] == "det_unet"
+
+
+def test_ingest_records_model_provenance(settings, tmp_path):
+    root = tmp_path / "model_diffusion_unet_x" / "ckpt-d-722-100000_heun_n20_cfg3_ens10"
+    _make_run(root, days=7)
+    result = ingest_run(settings, LocalFolderSource(root))
+    provenance = json.loads(result.manifest_path.read_text())["provenance"]
+    assert provenance["model_type"] == "diffusion_unet" and provenance["sampler"] == "heun"
+    assert provenance["checkpoint"] == "ckpt-d-722-100000" and provenance["ensemble_size"] == 10
+    with xr.open_dataset(result.artifact_path, engine="scipy") as dataset:
+        assert dataset.attrs["checkpoint"] == "ckpt-d-722-100000"
+
+
 def test_ingest_accepts_variable_aliases(settings, tmp_path):
     run_dir = tmp_path / "src" / "2026-09-25"
     run_dir.mkdir(parents=True)
@@ -370,7 +394,7 @@ def test_runs_endpoint_summarises_active_run(client):
     assert run["lead_days"] == 14 and run["missing_lead_days"] == list(range(15, 47))
     assert run["first_day"] == "2026-09-25" and run["days"][0]["value"] == pytest.approx(5.0)
     assert [week["days"] for week in run["weeks"]] == [7, 7]
-    assert {layer["layer"] for layer in run["layers"]} == {"rainfall", "rainy_days", "dry_spell_days", "wet_spell_days", "onset"}
+    assert {layer["layer"] for layer in run["layers"]} == {"rainfall", "rainy_days", "dry_spell_days", "wet_spell_days", "extreme_rain", "onset"}
     assert run["thresholds"]["onset_mm"] == 20 and run["thresholds"]["onset_guard_days"] == 30
 
 
@@ -492,3 +516,184 @@ def test_runs_endpoint_without_artifacts_returns_503(settings):
 
     response = TestClient(app).get("/subseasonal/runs")
     assert response.status_code == 503 and response.json()["error_code"] == "subseasonal_run_not_available"
+
+
+# --------------------------------------------------------------------------- ensembles
+
+MEMBERS = 10
+
+
+def _member_value(day: int, member: int) -> float:
+    # Days 1-3 wet except member 0 (0.9 mm); members 7-9 get 80 mm on day 2; days 4-9 dry for all.
+    if day == 2 and member >= 7:
+        return 80.0
+    if day <= 3:
+        return 5.0 * (member + 1) / 5.5
+    return _daily_value(day)
+
+
+def _make_ensemble_run(root: Path, days: int = 14, *, dim: str = "number") -> Path:
+    run_dir = root / f"{INIT:%Y-%m-%d}"
+    run_dir.mkdir(parents=True, exist_ok=True)
+    for day in range(1, days + 1):
+        field = np.empty((1, MEMBERS, LATITUDES.size, LONGITUDES.size), dtype=np.float32)
+        for member in range(MEMBERS):
+            field[0, member] = _member_value(day, member)
+        dataset = xr.Dataset(
+            {"precip_24h": (("time", dim, "latitude", "longitude"), field)},
+            coords={
+                "time": [INIT + pd.Timedelta(days=day)],
+                dim: np.arange(MEMBERS),
+                "latitude": LATITUDES,
+                "longitude": LONGITUDES,
+                "init_time": INIT,
+                "lead_time": ("time", [pd.Timedelta(days=day)]),
+            },
+        )
+        dataset.to_netcdf(run_dir / f"{INIT:%Y-%m-%d}-00-{day * 24:04d}.nc", engine="h5netcdf")
+    return run_dir
+
+
+@pytest.fixture()
+def ensemble_client(settings, tmp_path):
+    _make_ensemble_run(tmp_path / "ens", days=14)
+    ingest_run(settings, LocalFolderSource(tmp_path / "ens"))
+    from cumulus.main import app
+
+    return TestClient(app)
+
+
+def test_ingest_keeps_ensemble_members(settings, tmp_path):
+    _make_ensemble_run(tmp_path / "ens", days=7, dim="member")
+    result = ingest_run(settings, LocalFolderSource(tmp_path / "ens"))
+    manifest = json.loads(result.manifest_path.read_text())
+    assert manifest["ensemble"] == "ensemble" and manifest["members"] == MEMBERS
+    with xr.open_dataset(result.artifact_path, engine="scipy") as dataset:
+        assert dataset["precip"].dims == ("member", "lead_day", "latitude", "longitude")
+        assert float(dataset["precip"].isel(member=9, lead_day=1).max()) == pytest.approx(80.0)
+
+
+def test_median_onset_day_ranks_no_onset_last():
+    from cumulus.services.subseasonal_service import median_onset_day
+
+    days = np.array([[3.0, 0.0], [5.0, 0.0], [0.0, 4.0], [7.0, 0.0]])
+    assert median_onset_day(days).tolist() == [5.0, 0.0]
+
+
+def test_ensemble_runs_and_layers_report_members_and_probabilities(ensemble_client):
+    run = ensemble_client.get("/subseasonal/runs").json()["runs"][0]
+    assert run["members"] == MEMBERS and run["ensemble"] == "ensemble" and "Ensemble of 10" in run["guidance"]
+    assert run["thresholds"]["extreme_rain_mm"] == 50
+
+    rain = ensemble_client.get("/subseasonal/layer", params={"layer": "rainfall", "aggregation": "daily", "index": 4}).json()
+    assert rain["statistic"] == "mean" and rain["members"] == MEMBERS
+
+    rainy = ensemble_client.get("/subseasonal/layer", params={"layer": "rainy_days", "aggregation": "daily", "index": 1}).json()
+    assert rainy["statistic"] == "probability" and rainy["legend"]["key"] == "rainy_day_probability"
+    assert rainy["stats"]["max"] == pytest.approx(90.0)
+
+    extreme = ensemble_client.get("/subseasonal/layer", params={"layer": "extreme_rain", "aggregation": "daily", "index": 2}).json()
+    assert extreme["legend"]["key"] == "extreme_rain_probability" and extreme["stats"]["max"] == pytest.approx(30.0)
+    total = ensemble_client.get("/subseasonal/layer", params={"layer": "extreme_rain"}).json()
+    assert total["aggregation"] == "total" and total["stats"]["mean"] == pytest.approx(30.0)
+    tile = ensemble_client.get("/subseasonal/tiles/7/63/62.png", params={"layer": "extreme_rain", "aggregation": "weekly", "index": 1})
+    assert tile.status_code == 200 and tile.headers["content-type"] == "image/png"
+
+
+def test_ensemble_series_carry_spread_and_spell_probabilities(ensemble_client):
+    point = ensemble_client.get("/subseasonal/sample", params={"latitude": 5.6, "longitude": -0.2}).json()
+    assert point["members"] == MEMBERS
+    day2 = point["days"][1]
+    assert day2["extreme_prob"] == 30 and day2["spread"]["max"] == pytest.approx(80.0)
+    assert day2["spread"]["min"] < day2["spread"]["p50"] < day2["spread"]["max"]
+    assert point["days"][0]["wet_prob"] == 90 and point["days"][4]["spell_prob"]["dry"] == 100
+    assert point["weeks"][0]["spread"]["p25"] is not None
+    spells = [(spell["kind"], spell["start_day"], spell["end_day"], spell["probability"]) for spell in point["spells"]]
+    assert ("wet", 1, 3, 90) in spells and ("dry", 4, 9, 100) in spells
+    assert point["metrics"]["extreme_days"] == pytest.approx(0.3)
+
+    area = ensemble_client.get("/subseasonal/area", params={"level": "region", "name": "Northern"}).json()
+    assert area["members"] == MEMBERS and area["days"][1]["spread"]["max"] == pytest.approx(80.0, abs=0.2)
+
+
+def test_single_run_extreme_rain_is_a_flag(client):
+    layer = client.get("/subseasonal/layer", params={"layer": "extreme_rain", "aggregation": "daily", "index": 1}).json()
+    assert layer["statistic"] == "single" and layer["legend"]["categorical"] and layer["stats"]["max"] == 0
+    point = client.get("/subseasonal/sample", params={"latitude": 5.6, "longitude": -0.2}).json()
+    assert point["days"][0]["extreme_prob"] == 0 and point["metrics"]["extreme_days"] == 0
+
+
+# --------------------------------------------------------------------------- models and ensemble statistics
+
+
+@pytest.fixture()
+def two_model_client(settings, tmp_path):
+    from cumulus.subseasonal.ingest import for_model
+
+    _make_run(tmp_path / "det", days=14)
+    ingest_run(settings, LocalFolderSource(tmp_path / "det"))
+    _make_ensemble_run(tmp_path / "ens", days=14)
+    ingest_run(for_model(settings, "ifs_diffusion"), LocalFolderSource(tmp_path / "ens"))
+    from cumulus.main import app
+
+    return TestClient(app)
+
+
+def test_models_endpoint_lists_models_with_runs(two_model_client):
+    payload = two_model_client.get("/subseasonal/models").json()
+    models = {item["id"]: item for item in payload["models"]}
+    assert payload["default_model"] == "ifs_unet"
+    assert models["ifs_unet"]["available"] and models["ifs_unet"]["members"] == 1
+    assert models["ifs_diffusion"]["available"] and models["ifs_diffusion"]["members"] == MEMBERS
+    assert models["aurora"]["available"] is False and models["aurora"]["label"] == "Aurora"
+
+    diffusion = two_model_client.get("/subseasonal/runs", params={"model": "ifs_diffusion"}).json()
+    assert diffusion["runs"][0]["members"] == MEMBERS and diffusion["active_run_id"] == "ifs_diffusion_2026092500"
+    assert two_model_client.get("/subseasonal/runs").json()["runs"][0]["members"] == 1
+    assert two_model_client.get("/subseasonal/runs", params={"model": "nope"}).status_code == 422
+    assert two_model_client.get("/subseasonal/runs", params={"model": "aurora"}).status_code == 503
+
+
+def test_ensemble_rainfall_mean_median_and_chance(two_model_client):
+    base = {"model": "ifs_diffusion", "layer": "rainfall", "aggregation": "daily", "index": 2}
+    mean = two_model_client.get("/subseasonal/layer", params=base).json()
+    median = two_model_client.get("/subseasonal/layer", params={**base, "stat": "median"}).json()
+    chance = two_model_client.get("/subseasonal/layer", params={**base, "stat": "chance", "threshold": 50}).json()
+    assert mean["statistic"] == "mean" and median["statistic"] == "median" and chance["statistic"] == "probability"
+    # Day 2: members 0-6 get 0.9-6.4 mm, members 7-9 get 80 mm.
+    assert median["stats"]["max"] < mean["stats"]["max"]
+    assert chance["stats"]["max"] == pytest.approx(30.0) and chance["legend"]["key"] == "rain_chance"
+    assert chance["threshold_mm"] == 50 and chance["chance_thresholds"] == [10, 25, 50]
+    assert "model=ifs_diffusion" in chance["tile_url"] and "stat=chance" in chance["tile_url"]
+    tile_url = chance["tile_url"].replace("{z}", "7").replace("{x}", "63").replace("{y}", "61")
+    assert two_model_client.get(tile_url).status_code == 200
+    areas = two_model_client.get("/subseasonal/area-values", params={**base, "stat": "chance", "threshold": 50, "level": "region"}).json()
+    assert areas["values"]["Northern"] == pytest.approx(30.0)
+    total = two_model_client.get(
+        "/subseasonal/layer", params={**base, "aggregation": "total", "stat": "chance", "threshold": 100}
+    ).json()
+    assert total["stats"]["max"] == pytest.approx(30.0)
+    bad = two_model_client.get("/subseasonal/layer", params={**base, "stat": "chance", "threshold": 33})
+    assert bad.status_code == 422
+    assert chance["timeline_unit"] == "%" and len(chance["timeline"]) == 14 and chance["timeline"][1] > 0
+    assert chance["timeline"][0] == 0 and mean["timeline"] is None
+    assert median["timeline_unit"] == "mm"
+
+    point = two_model_client.get("/subseasonal/sample", params={"model": "ifs_diffusion", "latitude": 5.6, "longitude": -0.2}).json()
+    assert len(point["days"][1]["members"]) == MEMBERS and point["days"][1]["members"].count(80.0) == 3
+    assert len(point["weeks"][0]["members"]) == MEMBERS and len(point["member_totals"]) == MEMBERS
+    assert point["days"][1]["chance"]["50"] == 30 and point["days"][1]["extreme_by_date"] == 30
+    assert point["days"][-1]["extreme_by_date"] == 30 and point["weeks"][0]["extreme_prob"] == 30
+    assert point["weeks"][0]["chance"]["50"] == 30 and point["total_chance"]["100"] == 30
+    # An area's chances are the average of its cells' chances, the same as the map's area values.
+    area = two_model_client.get("/subseasonal/area", params={"model": "ifs_diffusion", "level": "region", "name": "Northern"}).json()
+    map_values = two_model_client.get(
+        "/subseasonal/area-values",
+        params={"model": "ifs_diffusion", "layer": "extreme_rain", "aggregation": "daily", "index": 2, "level": "region"},
+    ).json()["values"]
+    assert area["days"][1]["extreme_prob"] == pytest.approx(map_values["Northern"], abs=0.5)
+    single_point = two_model_client.get("/subseasonal/sample", params={"latitude": 5.6, "longitude": -0.2}).json()
+    assert single_point["days"][0]["members"] is None and single_point["member_totals"] is None
+    # A single run ignores the statistic.
+    single = two_model_client.get("/subseasonal/layer", params={"layer": "rainfall", "stat": "median"}).json()
+    assert single["statistic"] == "single"

@@ -616,6 +616,28 @@ def test_ensemble_series_carry_spread_and_spell_probabilities(ensemble_client):
     assert area["members"] == MEMBERS and area["days"][1]["spread"]["max"] == pytest.approx(80.0, abs=0.2)
 
 
+def test_ensemble_weeks_carry_day_count_spreads(ensemble_client):
+    point = ensemble_client.get("/subseasonal/sample", params={"latitude": 5.6, "longitude": -0.2}).json()
+    week = point["weeks"][0]
+    counts = week["day_counts"]
+    assert set(counts) == {"dry_spell", "wet_spell", "rainy"}
+    # Nine members rain on days 1-3 and are dry from day 4 (4 dry-spell days in week 1); the tenth is
+    # dry all week (7): the spread shows that disagreement.
+    assert counts["dry_spell"]["min"] == pytest.approx(4.0) and counts["dry_spell"]["max"] == pytest.approx(7.0)
+    assert counts["dry_spell"]["mean"] == pytest.approx(4.3)
+    length = week["end_day"] - week["start_day"] + 1
+    for spread in counts.values():
+        assert 0 <= spread["min"] <= spread["p25"] <= spread["p50"] <= spread["p75"] <= spread["max"] <= length
+    # The mean matches the daily shares: the average member's rain days are the sum of the daily shares.
+    rain_share = sum(day["wet_prob"] for day in point["days"][week["start_day"] - 1 : week["end_day"]]) / 100
+    assert counts["rainy"]["mean"] == pytest.approx(rain_share, abs=0.1)
+
+
+def test_single_run_weeks_have_no_day_count_spreads(client):
+    single = client.get("/subseasonal/sample", params={"latitude": 5.6, "longitude": -0.2}).json()
+    assert single["weeks"][0].get("day_counts") is None
+
+
 def test_single_run_extreme_rain_is_a_flag(client):
     layer = client.get("/subseasonal/layer", params={"layer": "extreme_rain", "aggregation": "daily", "index": 1}).json()
     assert layer["statistic"] == "single" and layer["legend"]["categorical"] and layer["stats"]["max"] == 0

@@ -723,6 +723,14 @@ class SubseasonalDay(BaseModel):
     total_by_date: dict[str, float | None] | None = None
 
 
+class SubseasonalDayCounts(BaseModel):
+    """Ensemble only: the spread across members of each member's day counts in a week."""
+
+    dry_spell: SubseasonalSpread | None = None
+    wet_spell: SubseasonalSpread | None = None
+    rainy: SubseasonalSpread | None = None
+
+
 class SubseasonalWeek(BaseModel):
     week: int
     start_day: int
@@ -736,6 +744,8 @@ class SubseasonalWeek(BaseModel):
     members: list[float | None] | None = None
     chance: dict[str, float | None] | None = None
     extreme_prob: float | None = None
+    # Ensemble only: days in a dry spell / wet spell / with rain, spread across members.
+    day_counts: SubseasonalDayCounts | None = None
 
 
 class SubseasonalLayerOption(BaseModel):

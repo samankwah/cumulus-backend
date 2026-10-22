@@ -1214,6 +1214,13 @@ def _ensemble_series_payload(run: PreparedRun, series: np.ndarray, member_series
     extreme_share = extreme.mean(axis=1) * 100
     consensus_dry = dry_share >= CONSENSUS_PERCENT
     consensus_wet = wet_spell_share >= CONSENSUS_PERCENT
+    # Each member's days in a dry spell, in a wet spell and with rain, week by week (week, member):
+    # counted per member like the map's weekly layers, so the drawer can show their spread as box plots.
+    member_day_counts = {
+        "dry_spell": metrics.window_sums(in_dry.astype(float), run.windows),
+        "wet_spell": metrics.window_sums(in_wet.astype(float), run.windows),
+        "rainy": metrics.window_sums(wet.astype(float), run.windows),
+    }
     days = []
     for position, value in enumerate(series):
         payload = _day_payload(run, position + 1, _round(float(value)))
@@ -1230,6 +1237,7 @@ def _ensemble_series_payload(run: PreparedRun, series: np.ndarray, member_series
         payload = _window_payload(run, window, _round(float(value)))
         payload["spread"] = _spread(member_weekly[position])
         payload["members"] = _member_values(member_weekly[position])
+        payload["day_counts"] = {key: _spread(counts[position]) for key, counts in member_day_counts.items()}
         weeks.append(payload)
     max_day = int(np.nanargmax(series)) + 1 if series.size else None
     spells = []

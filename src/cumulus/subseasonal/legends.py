@@ -30,7 +30,8 @@ class Legend:
     bins: tuple[LegendBin, ...]
     note: str | None = None
     below_min_transparent: bool = False
-    opacity: int = 222  # PNG alpha for coloured pixels
+    # PNG alpha for coloured pixels: opaque, so the map shows exactly the legend's colours.
+    opacity: int = 255
     categorical: bool = False  # bins are named classes, not numeric ranges
 
 

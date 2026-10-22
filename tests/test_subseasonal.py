@@ -73,6 +73,12 @@ def _make_run(root: Path, days: int = 14, *, init: pd.Timestamp = INIT, skip: se
 def settings(monkeypatch, tmp_path):
     monkeypatch.setenv("CUMULUS_SUBSEASONAL__ARTIFACT_DIR", str(tmp_path / "artifacts"))
     monkeypatch.setenv("CUMULUS_SUBSEASONAL__RAW_CACHE_DIR", str(tmp_path / "raw-cache"))
+    # The tests were written against IFS-UNet as the default model; the shipped default is checked
+    # separately (test_shipped_default_model_is_aurora_imerg_unet).
+    monkeypatch.setenv("CUMULUS_SUBSEASONAL__SOURCE_ID", "ifs_unet")
+    # Observed rain lives in its own temporary folder, so no real or demo observations leak in.
+    monkeypatch.setenv("CUMULUS_SUBSEASONAL__OBSERVED__ARTIFACT_DIR", str(tmp_path / "observed"))
+    monkeypatch.setenv("CUMULUS_SUBSEASONAL__OBSERVED__RAW_CACHE_DIR", str(tmp_path / "observed-cache"))
     get_settings.cache_clear()
     yield get_settings()
     get_settings.cache_clear()
@@ -415,9 +421,12 @@ def test_layer_and_tile_endpoints(client):
 
 
 def test_outlook_layers_and_area_values(client):
-    dry = client.get("/subseasonal/layer", params={"layer": "dry_spell_days"}).json()
+    dry = client.get("/subseasonal/layer", params={"layer": "dry_spell_days", "stat": "days"}).json()
     # Days 4-9 are a 6-day dry run (>= 5) -> 6 dry-spell days everywhere.
     assert dry["stats"]["min"] == dry["stats"]["max"] == 6
+    # By default a whole run answers with the chance of such a spell: certain, for a single run.
+    chance = client.get("/subseasonal/layer", params={"layer": "dry_spell_days"}).json()
+    assert chance["stats"]["min"] == chance["stats"]["max"] == 100 and chance["legend"]["unit"] == "%"
     values = client.get(
         "/subseasonal/area-values", params={"level": "district", "layer": "rainfall", "aggregation": "daily", "index": 1}
     ).json()["values"]
@@ -429,7 +438,7 @@ def test_indicator_layers_support_daily_and_weekly_periods(client):
     assert set(layers["dry_spell_days"]["aggregations"]) == {"daily", "weekly", "total"}
 
     def stats(layer, aggregation, index=None):
-        params = {"layer": layer, "aggregation": aggregation}
+        params = {"layer": layer, "aggregation": aggregation, "stat": "days"}
         if index is not None:
             params["index"] = index
         response = client.get("/subseasonal/layer", params=params)
@@ -573,6 +582,86 @@ def test_ingest_keeps_ensemble_members(settings, tmp_path):
         assert float(dataset["precip"].isel(member=9, lead_day=1).max()) == pytest.approx(80.0)
 
 
+def _make_member_folders(root: Path, days: int = 7, members: int = 3) -> Path:
+    """The sample-bundle layout: no date folder, one ``member_###`` folder per member, one member per file."""
+    for member in range(members):
+        folder = root / f"member_{member:03d}"
+        folder.mkdir(parents=True, exist_ok=True)
+        for day in range(1, days + 1):
+            _write_lead_file(folder, day, value=_member_value(day, member))
+    return root
+
+
+def test_local_source_reads_a_flat_run_folder(tmp_path):
+    for day in range(1, 4):
+        _write_lead_file(tmp_path, day)
+    source = LocalFolderSource(tmp_path)
+    assert source.list_runs() == [date(2026, 9, 25)]
+    assert [item.lead_hours for item in source.list_lead_files(date(2026, 9, 25))] == [24, 48, 72]
+    assert [path.parent for path in source.fetch_run(date(2026, 9, 25), tmp_path / "cache")] == [tmp_path] * 3
+
+
+def test_local_source_lists_member_folders_with_unique_keys(tmp_path):
+    _make_member_folders(tmp_path, days=2, members=2)
+    source = LocalFolderSource(tmp_path)
+    assert source.list_runs() == [date(2026, 9, 25)]
+    files = source.list_lead_files(date(2026, 9, 25))
+    assert [item.key for item in files] == [
+        "member_000/2026-09-25-00-0024.nc",
+        "member_000/2026-09-25-00-0048.nc",
+        "member_001/2026-09-25-00-0024.nc",
+        "member_001/2026-09-25-00-0048.nc",
+    ]
+    # Member folders inside a dated run folder work the same way.
+    _make_member_folders(tmp_path / "dated" / "2026-09-25", days=2, members=2)
+    assert len(LocalFolderSource(tmp_path / "dated").list_lead_files(date(2026, 9, 25))) == 4
+
+
+def test_ingest_stacks_member_folders_into_one_ensemble(settings, tmp_path):
+    _make_member_folders(tmp_path / "bundle", days=7, members=3)
+    source = LocalFolderSource(tmp_path / "bundle")
+    result = ingest_run(settings, source)
+    manifest = json.loads(result.manifest_path.read_text())
+    assert manifest["members"] == 3 and manifest["ensemble"] == "ensemble"
+    assert manifest["source_files"][0]["file"] == "member_000/2026-09-25-00-0024.nc" and len(manifest["source_files"]) == 21
+    with xr.open_dataset(result.artifact_path, engine="scipy") as dataset:
+        precip = dataset["precip"]
+        assert precip.dims == ("member", "lead_day", "latitude", "longitude")
+        # Members keep their own values (day 1: 5 * (m + 1) / 5.5 mm), in member-folder order.
+        assert precip.isel(lead_day=0, latitude=10, longitude=10).values.tolist() == pytest.approx([0.9, 1.8, 2.7], abs=0.05)
+    # Ingesting the same files again is a no-op, even though file names repeat across members.
+    assert ingest_run(settings, source).unchanged
+
+
+def test_ingest_rejects_member_folders_with_different_leads(settings, tmp_path):
+    _make_member_folders(tmp_path / "bundle", days=7, members=2)
+    (tmp_path / "bundle" / "member_001" / "2026-09-25-00-0168.nc").unlink()
+    with pytest.raises(IngestError, match="same lead days"):
+        ingest_run(settings, LocalFolderSource(tmp_path / "bundle"))
+
+
+def test_registry_provenance_fills_in_what_the_path_does_not_say(settings, tmp_path):
+    from cumulus.subseasonal.ingest import for_model
+
+    _make_member_folders(tmp_path / "bundle", days=7, members=2)
+    result = ingest_run(for_model(settings, "aurora_imerg_diffusion"), LocalFolderSource(tmp_path / "bundle"))
+    provenance = json.loads(result.manifest_path.read_text())["provenance"]
+    assert provenance["model_type"] == "diffusion_unet" and provenance["sampler"] == "heun"
+    assert provenance["sampler_steps"] == 20 and provenance["ensemble_size"] == 2
+
+
+def test_shipped_default_model_is_aurora_imerg_unet(monkeypatch):
+    monkeypatch.delenv("CUMULUS_SUBSEASONAL__SOURCE_ID", raising=False)
+    get_settings.cache_clear()
+    try:
+        config = get_settings().subseasonal
+        assert config.source_id == "aurora_imerg_unet"
+        families = {(spec.family, spec.downscaling) for spec in config.models.values()}
+        assert families == {(family, method) for family in ("ifs", "aurora_imerg", "aurora_era5") for method in ("unet", "diffusion", "bilinear")}
+    finally:
+        get_settings.cache_clear()
+
+
 def test_median_onset_day_ranks_no_onset_last():
     from cumulus.services.subseasonal_service import median_onset_day
 
@@ -667,13 +756,17 @@ def test_models_endpoint_lists_models_with_runs(two_model_client):
     assert payload["default_model"] == "ifs_unet"
     assert models["ifs_unet"]["available"] and models["ifs_unet"]["members"] == 1
     assert models["ifs_diffusion"]["available"] and models["ifs_diffusion"]["members"] == MEMBERS
-    assert models["aurora"]["available"] is False and models["aurora"]["label"] == "Aurora"
+    assert models["aurora_imerg_unet"]["available"] is False and models["aurora_imerg_unet"]["label"] == "Aurora-IMERG · UNet"
+    # Each model names its S2S source and downscaler, so the viewer can offer them as two choices.
+    assert (models["ifs_diffusion"]["family"], models["ifs_diffusion"]["downscaling"]) == ("ifs", "diffusion")
+    assert models["aurora_era5_bilinear"]["family_label"] == "Aurora · ERA5 head"
+    assert models["aurora_era5_bilinear"]["downscaling_label"] == "Bilinear"
 
     diffusion = two_model_client.get("/subseasonal/runs", params={"model": "ifs_diffusion"}).json()
     assert diffusion["runs"][0]["members"] == MEMBERS and diffusion["active_run_id"] == "ifs_diffusion_2026092500"
     assert two_model_client.get("/subseasonal/runs").json()["runs"][0]["members"] == 1
     assert two_model_client.get("/subseasonal/runs", params={"model": "nope"}).status_code == 422
-    assert two_model_client.get("/subseasonal/runs", params={"model": "aurora"}).status_code == 503
+    assert two_model_client.get("/subseasonal/runs", params={"model": "aurora_imerg_unet"}).status_code == 503
 
 
 def test_synthetic_runs_are_flagged(settings, two_model_client):
@@ -751,3 +844,201 @@ def test_a_real_run_retires_synthetic_demo_runs(settings, tmp_path):
     assert demo.run_id in real.removed_runs
     assert list_run_ids(diffusion) == [real.run_id]
     assert json.loads((source_dir(diffusion) / "active.json").read_text())["run_id"] == real.run_id
+
+
+# --------------------------------------------------------------------------- observed rain (IMERG)
+
+# A 0.25 degree grid wider than Ghana, stored as GES DISC does: precipitation(time, lon, lat).
+OBS_LATITUDES = np.round(np.arange(2.125, 14.0, 0.25), 4)
+OBS_LONGITUDES = np.round(np.arange(-5.875, 4.0, 0.25), 4)
+
+
+def _write_observed_day(folder: Path, day: date, value: float, *, holes: int = 0, name: str | None = None) -> Path:
+    folder.mkdir(parents=True, exist_ok=True)
+    field = np.full((1, OBS_LONGITUDES.size, OBS_LATITUDES.size), value, dtype=np.float32)
+    if holes:
+        # Missing cells over Ghana, as IMERG's fill value.
+        field[0, 10 : 10 + holes, 12:30] = -9999.9
+    dataset = xr.Dataset(
+        {"precipitation": (("time", "lon", "lat"), field, {"units": "mm/day"})},
+        coords={"time": [pd.Timestamp(day)], "lon": OBS_LONGITUDES, "lat": OBS_LATITUDES},
+    )
+    path = folder / (name or f"3B-DAY-L.MS.MRG.3IMERG.{day:%Y%m%d}-S000000-E235959.V07B.nc")
+    dataset.to_netcdf(path, engine="h5netcdf")
+    return path
+
+
+def _ingest_observed(settings, folder: Path, today: date = date(2026, 10, 15)):
+    from cumulus.subseasonal import observed
+
+    return observed.ingest(settings, observed.build_source(settings.subseasonal.observed, "local", folder), today=today)
+
+
+def test_spell_masks_count_a_spell_under_way_before_the_start():
+    dry = np.array([True, True, False, True, True, True, True, True, False])
+    in_spell, starts = metrics.spell_masks(dry, 5)
+    # Without knowing the days before, days 1-2 are too short, and nothing starts on day 1.
+    assert in_spell.tolist() == [False, False, False, True, True, True, True, True, False]
+    assert np.flatnonzero(starts).tolist() == [3]
+    # Three dry days before the start make days 1-2 part of a five-day spell already under way.
+    in_spell, starts = metrics.spell_masks(dry, 5, prefix=np.array([False, True, True, True]))
+    assert in_spell[:2].tolist() == [True, True] and not starts[0]
+    # A wet day just before: a spell touching day 1 is known to begin there.
+    in_spell, starts = metrics.spell_masks(np.array([True] * 6), 5, prefix=np.array([False]))
+    assert starts.tolist() == [True, False, False, False, False, False]
+    assert metrics.starts_within(np.array([False, False, True, False]), 2).tolist() == [False, True, True, False]
+
+
+def test_find_spells_with_observed_days_before_the_run():
+    series = np.array([0.0, 0.0, 5.0, 0.0, 0.0, 0.0, 0.0, 0.0])
+    rule = {"wet_threshold_mm": 1.0, "dry_spell_min_days": 5, "wet_spell_min_days": 3}
+    first = metrics.find_spells(series, **rule, prefix=np.array([0.0, 0.0, 0.0]))[0]
+    assert (first.kind, first.start_day, first.end_day, first.open_start) == ("dry", 1, 2, True)
+    assert metrics.find_spells(np.zeros(6), **rule, prefix=np.array([4.0]))[0].open_start is False
+    assert metrics.find_spells(np.zeros(6), **rule)[0].open_start is True
+
+
+def test_observed_ingest_reads_imerg_daily_files(settings, tmp_path):
+    from datetime import timedelta
+
+    from cumulus.subseasonal import observed
+
+    raw = tmp_path / "imerg"
+    for offset, value in enumerate([0.0, 2.0, 12.0]):
+        _write_observed_day(raw, date(2026, 9, 25) + timedelta(days=offset), value)
+    _write_observed_day(raw, date(2026, 9, 28), 4.0, holes=12)  # too much of Ghana missing
+    _write_observed_day(raw, date(2026, 3, 1), 9.0)  # outside the kept window
+    result = _ingest_observed(settings, raw)
+    assert (result.first_date, result.last_date, result.days) == (date(2026, 9, 25), date(2026, 9, 28), 4)
+    manifest = json.loads((Path(settings.subseasonal.observed.artifact_dir) / "manifest.json").read_text())
+    assert manifest["coverage"]["2026-09-25"] == 1.0 and manifest["coverage"]["2026-09-28"] < 0.95
+    loaded = observed.load(settings.subseasonal.observed)
+    # Latitude ascending on a (lat, lon) grid, fill values masked, 0.1 mm packing.
+    assert loaded.values.shape[1:] == (loaded.latitudes.size, loaded.longitudes.size)
+    assert loaded.latitudes[0] < loaded.latitudes[-1] and float(np.nanmax(loaded.values[2])) == pytest.approx(12.0)
+    # Nothing new: a second run changes nothing; a new day is folded in.
+    assert _ingest_observed(settings, raw).unchanged
+    _write_observed_day(raw, date(2026, 9, 29), 1.5)
+    added = _ingest_observed(settings, raw)
+    assert added.last_date == date(2026, 9, 29) and added.new_dates == (date(2026, 9, 29),)
+
+
+def test_observed_files_named_by_date_without_a_time_coordinate(settings, tmp_path):
+    from cumulus.subseasonal import observed
+
+    raw = tmp_path / "imerg"
+    raw.mkdir()
+    rate = np.full((OBS_LATITUDES.size, OBS_LONGITUDES.size), 3.0, dtype=np.float32)
+    dataset = xr.Dataset(
+        {"precip": (("lat", "lon"), rate, {"units": "mm/hr"})},
+        coords={"lat": OBS_LATITUDES, "lon": OBS_LONGITUDES},
+    )
+    dataset.to_netcdf(raw / "imerg_2026-09-30.nc", engine="h5netcdf")
+    result = _ingest_observed(settings, raw)
+    assert result.last_date == date(2026, 9, 30)
+    # mm/hr is a daily mean rate: 3 mm/hr is 72 mm in the day.
+    assert float(np.nanmax(observed.load(settings.subseasonal.observed).values)) == pytest.approx(72.0)
+
+
+@pytest.fixture()
+def observed_client(settings, tmp_path):
+    """An ensemble run from 25 Sep with observations for 22-27 Sep: three dry days before the run,
+    then 0, 0 and 12 mm on its first three days (whatever the members had forecast)."""
+    _make_ensemble_run(tmp_path / "ens", days=14)
+    ingest_run(settings, LocalFolderSource(tmp_path / "ens"))
+    raw = tmp_path / "imerg"
+    for day, value in [(22, 0.0), (23, 0.0), (24, 0.0), (25, 0.0), (26, 0.0), (27, 12.0)]:
+        _write_observed_day(raw, date(2026, 9, day), value)
+    _ingest_observed(settings, raw)
+    from cumulus.main import app
+
+    return TestClient(app)
+
+
+def test_observed_days_replace_the_forecast_in_every_member(observed_client):
+    point = observed_client.get("/subseasonal/sample", params={"latitude": 5.6, "longitude": -0.2}).json()
+    days = point["days"]
+    assert point["observed_days"] == 3 and point["observed_through"] == "2026-09-27"
+    assert [day["observed"] for day in days[:4]] == [True, True, True, False]
+    # Observed days are certain: every member holds the observation, so the spread collapses and
+    # chances are 0 or 100 (day 2 had 30 % of members at 80 mm in the forecast).
+    assert days[1]["value"] == 0.0 and days[1]["spread"]["min"] == days[1]["spread"]["max"] == 0.0
+    assert days[1]["extreme_prob"] == 0 and days[2]["wet_prob"] == 100 and days[0]["wet_prob"] == 0
+    assert days[1]["chance"]["10"] == 0 and days[2]["chance"]["10"] == 100
+    # What had been forecast is kept for the drawer.
+    assert days[1]["forecast_value"] > 20 and days[3].get("forecast_value") is None
+    # Three dry days before the run plus the two dry observed days make a dry spell under way.
+    assert days[0]["spell_prob"]["dry"] == 100 and days[1]["spell_prob"]["dry"] == 100
+    assert days[0]["spell_start_prob"]["dry"] == 0
+    # From day 4 every member is dry for six days: a spell that begins on day 4.
+    assert days[3]["spell_start_prob"]["dry"] == 100 and days[2]["spell_ahead_prob"]["dry"] == 100
+    assert point["spells"][0]["kind"] == "dry" and point["spells"][0]["open_start"] is True
+    assert point["weeks"][0]["observed_days"] == 3 and point["weeks"][1]["observed_days"] == 0
+
+
+def test_observed_days_reach_the_runs_list_maps_and_tiles(observed_client):
+    run = observed_client.get("/subseasonal/runs").json()["runs"][0]
+    assert run["observed_through"] == "2026-09-27" and run["observed_source"].startswith("IMERG")
+    assert run["observed_version"] and [day["observed"] for day in run["days"][:4]] == [True, True, True, False]
+    elapsed = observed_client.get("/subseasonal/layer", params={"layer": "rainfall", "aggregation": "daily", "index": 2}).json()
+    ahead = observed_client.get("/subseasonal/layer", params={"layer": "rainfall", "aggregation": "daily", "index": 5}).json()
+    assert elapsed["observed"] is True and ahead["observed"] is False and elapsed["observed_days"] == 3
+    assert "obs=" in elapsed["tile_url"]
+    # The map agrees: the elapsed day's extreme-rain share is 0 everywhere now.
+    extreme = observed_client.get("/subseasonal/layer", params={"layer": "extreme_rain", "aggregation": "daily", "index": 2}).json()
+    assert extreme["stats"]["max"] == 0
+
+
+def test_no_observations_leave_the_forecast_alone(ensemble_client):
+    point = ensemble_client.get("/subseasonal/sample", params={"latitude": 5.6, "longitude": -0.2}).json()
+    assert point["observed_days"] == 0 and point["observed_through"] is None
+    assert not any(day["observed"] for day in point["days"])
+    assert point["days"][1]["extreme_prob"] == pytest.approx(30, abs=1)
+    # Without observations before the run, a spell touching day 1 has no known start.
+    assert point["days"][0]["spell_start_prob"]["dry"] == 0
+
+
+# --------------------------------------------------------------------------- spell length chosen by the viewer
+
+
+def test_spell_length_is_chosen_by_the_viewer(client):
+    def layer(**params):
+        response = client.get("/subseasonal/layer", params={"layer": "dry_spell_days", **params})
+        assert response.status_code == 200, response.text
+        return response.json()
+
+    # Days 4-9 are a 6-day dry run: a spell for "5+ days", not for "7+ days".
+    assert layer(aggregation="daily", index=5, spell_days=5)["stats"]["max"] == 100
+    assert layer(aggregation="daily", index=5, spell_days=7)["stats"]["max"] == 0
+    assert layer(aggregation="total", stat="days", spell_days=6)["stats"]["max"] == 6
+    assert layer(aggregation="total", spell_days=7)["stats"]["max"] == 0
+    # A spell touching a week counts for that week's chance, even when most of it lies outside.
+    week2 = layer(aggregation="weekly", index=2, spell_days=6)
+    assert week2["stats"]["min"] == 100 and week2["spell_days"] == 6 and week2["spell_stat"] == "chance"
+    assert "spell_days=6" in week2["tile_url"] and "stat=chance" in week2["tile_url"]
+    assert "6+ days" in week2["title"] and "6+ days" in week2["legend"]["note"]
+    # Out of range, or an unknown statistic, is refused.
+    assert client.get("/subseasonal/layer", params={"layer": "dry_spell_days", "spell_days": 40}).status_code == 422
+    assert client.get("/subseasonal/layer", params={"layer": "dry_spell_days", "aggregation": "weekly", "stat": "mean"}).status_code == 422
+    # Tiles differ by length.
+    def tile(length):
+        url = layer(aggregation="daily", index=5, spell_days=length)["tile_url"]
+        return client.get(url.replace("{z}", "7").replace("{x}", "63").replace("{y}", "61")).content
+
+    assert tile(5) != tile(7)
+
+
+def test_series_use_the_chosen_spell_lengths(client):
+    base = {"latitude": 5.6, "longitude": -0.2}
+    default = client.get("/subseasonal/sample", params=base).json()
+    longer = client.get("/subseasonal/sample", params={**base, "dry_spell_days": 7}).json()
+    assert [spell["kind"] for spell in default["spells"]].count("dry") >= 1
+    # The 6-day dry run is no spell when 7 days are asked for, and the series says which length it used.
+    assert all(spell["start_day"] != 4 for spell in longer["spells"] if spell["kind"] == "dry")
+    assert longer["thresholds"]["dry_spell_min_days"] == 7 and longer["thresholds"]["default_dry_spell_days"] == 5
+    assert default["weeks"][0]["spell_chance"]["dry"] == 100 and longer["weeks"][0]["spell_chance"]["dry"] == 0
+    assert default["spell_chance_total"]["dry"] == 100
+    assert client.get("/subseasonal/sample", params={**base, "wet_spell_days": 99}).status_code == 422
+    run = client.get("/subseasonal/runs").json()["runs"][0]
+    assert run["spell_days_range"] == {"dry": [2, 15], "wet": [2, 10]}
+

@@ -675,6 +675,9 @@ class SubseasonalThresholds(BaseModel):
     wet_day_mm: float
     dry_spell_min_days: int
     wet_spell_min_days: int
+    # The official spell lengths, when the series was asked for others.
+    default_dry_spell_days: int | None = None
+    default_wet_spell_days: int | None = None
     onset_mm: float | None = None
     onset_window_days: int | None = None
     onset_guard_days: int | None = None
@@ -721,6 +724,13 @@ class SubseasonalDay(BaseModel):
     chance: dict[str, float | None] | None = None
     extreme_by_date: float | None = None
     total_by_date: dict[str, float | None] | None = None
+    # Elapsed days holding observed rain (IMERG) rather than forecast, and what had been forecast.
+    observed: bool = False
+    forecast_value: float | None = None
+    # % (0/100 for a single run, cell by cell over an area) that a dry / wet spell begins this day,
+    # and that one begins within the next ``spell_ahead_days`` days.
+    spell_start_prob: SubseasonalSpellChance | None = None
+    spell_ahead_prob: SubseasonalSpellChance | None = None
 
 
 class SubseasonalDayCounts(BaseModel):
@@ -746,6 +756,10 @@ class SubseasonalWeek(BaseModel):
     extreme_prob: float | None = None
     # Ensemble only: days in a dry spell / wet spell / with rain, spread across members.
     day_counts: SubseasonalDayCounts | None = None
+    # Days of this week that are observed (elapsed) rather than forecast.
+    observed_days: int = 0
+    # % with a dry / wet spell of the chosen length touching this week.
+    spell_chance: SubseasonalSpellChance | None = None
 
 
 class SubseasonalLayerOption(BaseModel):
@@ -777,6 +791,9 @@ class SubseasonalRunResponse(BaseModel):
     source_id: str
     source_label: str
     model_label: str
+    # The S2S source and downscaler names from the model registry (e.g. "Aurora · IMERG head", "UNet").
+    family_label: str | None = None
+    downscaling_label: str | None = None
     ensemble: str
     members: int = 1
     # True for a made-up demo run (not model output); the viewer labels it "Demo data".
@@ -795,6 +812,13 @@ class SubseasonalRunResponse(BaseModel):
     grid_resolution_degrees: float | None = None
     bounds: dict[str, float] | None = None
     thresholds: SubseasonalThresholds
+    # The last elapsed day holding observed rain, where from, and a version that changes with it.
+    observed_through: date | None = None
+    observed_source: str | None = None
+    observed_version: str | None = None
+    observed_synthetic: bool = False
+    # Spell lengths a user may choose, per kind: [shortest, longest] days.
+    spell_days_range: dict[str, list[int]] | None = None
     days: list[SubseasonalDay]
     weeks: list[SubseasonalWeek]
     layers: list[SubseasonalLayerOption]
@@ -806,6 +830,11 @@ class SubseasonalModelOption(BaseModel):
     label: str
     source_label: str
     description: str | None = None
+    # The S2S source and the downscaler this model combines, so the viewer can offer them apart.
+    family: str | None = None
+    family_label: str | None = None
+    downscaling: str | None = None
+    downscaling_label: str | None = None
     available: bool
     active_run_id: str | None = None
     init_time: datetime | None = None
@@ -879,6 +908,12 @@ class SubseasonalLayerResponse(BaseModel):
     # Ensemble rainfall median / chance: the national value per day or week, for the dock timeline.
     timeline: list[float | None] | None = None
     timeline_unit: str | None = None
+    # A daily map of an elapsed day that has been observed shows observed rain, not forecast.
+    observed: bool = False
+    observed_days: int = 0
+    # Spell layers: the spell length shown, and for a week or the run "chance" or "days".
+    spell_days: int | None = None
+    spell_stat: str | None = None
 
 
 class SubseasonalAreaValuesResponse(BaseModel):
@@ -953,3 +988,11 @@ class SubseasonalSeriesResponse(BaseModel):
     member_totals: list[float | None] | None = None
     # Whole run, cell by cell and averaged over the place: % reaching each whole-run amount.
     total_chance: dict[str, float | None] | None = None
+    # Leading days that hold observed rain (IMERG), the last of them, and where it comes from.
+    observed_days: int = 0
+    observed_through: date | None = None
+    observed_source: str | None = None
+    # The window of ``spell_ahead_prob``: a spell beginning within this many days of each day.
+    spell_ahead_days: int | None = None
+    # % with a dry / wet spell of the chosen length anywhere in the run.
+    spell_chance_total: SubseasonalSpellChance | None = None

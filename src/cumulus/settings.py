@@ -32,6 +32,7 @@ DEFAULT_NATIONWIDE_ARTIFACT_DIR = BACKEND_ROOT / "data" / "artifacts" / "nationw
 DEFAULT_SEASONAL_MAP_ARTIFACT_DIR = BACKEND_ROOT / "data" / "artifacts" / "seasonal_map"
 DEFAULT_FORECAST_PRODUCT_ARTIFACT_DIR = BACKEND_ROOT / "data" / "artifacts" / "forecast_products"
 DEFAULT_SUBSEASONAL_ARTIFACT_DIR = BACKEND_ROOT / "data" / "artifacts" / "subseasonal"
+DEFAULT_OBSERVED_ARTIFACT_DIR = BACKEND_ROOT / "data" / "artifacts" / "observed" / "imerg"
 DEFAULT_BACKEND_DISTRICT_GEOJSON_PATH = BACKEND_ROOT / "data" / "ghana_district_polygons_simplified.geojson"
 DEFAULT_DISTRICT_GEOJSON_PATH = DEFAULT_BACKEND_DISTRICT_GEOJSON_PATH
 DEFAULT_WASS2S_2026_ROOT = Path.home() / "Desktop" / "MEST_projects" / "wass2s" / "Agro_PRESAGG_2026_ic_1"
@@ -324,15 +325,56 @@ class SubseasonalBoundsConfig(BaseModel):
 
 
 class SubseasonalModelConfig(BaseModel):
-    """One forecast model the viewer can show; its runs live under ``<artifact_dir>/<model id>/``."""
+    """One forecast model the viewer can show; its runs live under ``<artifact_dir>/<model id>/``.
+
+    A model is one sub-seasonal (S2S) source run through one downscaler, e.g. Aurora (IMERG head)
+    downscaled with a UNet. ``family`` and ``downscaling`` let the viewer offer the two choices
+    separately, the way upstream thinks of them.
+    """
 
     model_label: str
     source_label: str
+    # The S2S source (e.g. "aurora_imerg") and its display name.
+    family: str | None = None
+    family_label: str | None = None
+    # The downscaler ("unet", "diffusion", "bilinear") and its display name.
+    downscaling: str | None = None
+    downscaling_label: str | None = None
     azure_prefix: str | None = None
     # Container SAS URL when this model's files live in a different container; else the shared one.
     azure_sas_url: str | None = None
+    # Name of the CI secret holding this model's container SAS URL (used by the ingest workflow).
+    sas_secret: str | None = None
     local_source_dir: Path | None = None
     description: str | None = None
+    # Known facts about the downscaling model (checkpoint, sampler...) for runs whose file paths
+    # don't encode them; merged under whatever the path itself reveals.
+    provenance: dict[str, Any] = Field(default_factory=dict)
+
+
+class ObservedRainConfig(BaseModel):
+    """Observed daily rainfall (IMERG late run) shown on a forecast's elapsed days.
+
+    Upstream preprocesses the half-hourly IMERG late-run files into daily (00-24 UTC) totals on a
+    0.25 degree grid in Azure Blob Storage; ingest keeps a rolling Ghana-sized artifact of them.
+    """
+
+    enabled: bool = True
+    artifact_dir: Path = DEFAULT_OBSERVED_ARTIFACT_DIR
+    source_label: str = "IMERG late run (NASA GPM)"
+    azure_sas_url: str | None = None
+    azure_prefix: str = "imerg-lr/processed/0p25/data/"
+    local_source_dir: Path | None = None
+    raw_cache_dir: Path | None = None
+    variable_aliases: list[str] = Field(
+        default_factory=lambda: ["precipitation", "precip", "precipitation_daily", "precip_24h", "precip_mm", "tp", "pr"]
+    )
+    # Days kept in the artifact (covers the oldest forecast run kept, plus the spell look-back).
+    keep_days: int = 120
+    # A day counts as observed only when this share of the Ghana window has values.
+    min_coverage: float = 0.95
+    # Observed days before a run's start, used only to tell whether a spell was already running.
+    lookback_days: int = 10
 
 
 class SubseasonalConfig(BaseModel):
@@ -345,6 +387,9 @@ class SubseasonalConfig(BaseModel):
     wet_day_threshold_mm: float = 1.0
     dry_spell_min_days: int = 5
     wet_spell_min_days: int = 3
+    # Spell lengths a viewer may choose instead ("at least N days in a row"): [shortest, longest].
+    dry_spell_days_range: tuple[int, int] = (2, 15)
+    wet_spell_days_range: tuple[int, int] = (2, 10)
     # Rainy-season onset: >= 20 mm within 3 days, then no dry spell over 10 days in the next 30.
     onset_threshold_mm: float = 20.0
     onset_window_days: int = 3
@@ -361,9 +406,11 @@ class SubseasonalConfig(BaseModel):
     local_source_dir: Path | None = None
     azure_sas_url: str | None = None
     azure_prefix: str = "Unet/"
-    # Models offered in the viewer's model picker, by id. ``source_id`` is the default model; a
-    # model listed here only appears in the picker once it has an ingested run.
+    # Models offered in the viewer's model picker, by id. ``source_id`` is the default model (what
+    # the API serves and ingest writes when no model is named); a model without an ingested run is
+    # listed as unavailable.
     models: dict[str, SubseasonalModelConfig] = Field(default_factory=dict)
+    observed: ObservedRainConfig = Field(default_factory=ObservedRainConfig)
 
 
 class ModelParamsConfig(BaseModel):

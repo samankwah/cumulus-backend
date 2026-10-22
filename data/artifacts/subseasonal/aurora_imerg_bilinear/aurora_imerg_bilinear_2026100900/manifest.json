@@ -1,0 +1,320 @@
+{
+  "schema_version": 1,
+  "run_id": "aurora_imerg_bilinear_2026100900",
+  "source_id": "aurora_imerg_bilinear",
+  "source_label": "Aurora (IMERG head) \u00b7 bilinear interpolation",
+  "model_label": "Aurora-IMERG \u00b7 Bilinear",
+  "ensemble": "deterministic",
+  "members": 1,
+  "variable": "precip",
+  "raw_variable": "precip_24h",
+  "unit": "mm",
+  "init_time": "2026-10-09T00:00:00+00:00",
+  "lead_days": [
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    8,
+    9,
+    10,
+    11,
+    12,
+    13,
+    14,
+    15,
+    16,
+    17,
+    18,
+    19,
+    20,
+    21,
+    22,
+    23,
+    24,
+    25,
+    26,
+    27,
+    28,
+    29,
+    30,
+    31,
+    32,
+    33,
+    34,
+    35,
+    36,
+    37,
+    38,
+    39,
+    40,
+    41,
+    42,
+    43,
+    44,
+    45,
+    46
+  ],
+  "expected_lead_days": 46,
+  "first_rain_day": "2026-10-09",
+  "last_rain_day": "2026-11-23",
+  "grid": {
+    "shape": [
+      81,
+      61
+    ],
+    "resolution_degrees": 0.1
+  },
+  "bounds": {
+    "latitude_min": 4.0,
+    "latitude_max": 12.0,
+    "longitude_min": -4.0,
+    "longitude_max": 2.0
+  },
+  "quality": {
+    "negative_fraction_clipped": 0.0784,
+    "max_mm": 69.5
+  },
+  "artifact": "rainfall.nc",
+  "ingested_at": "2026-10-21T13:03:02+00:00",
+  "ingested_from": "local:bilinear",
+  "source_files": [
+    {
+      "file": "2026-10-09-00-0024.nc",
+      "size": 1156948,
+      "sha1": "c589c1837d3a4087e30cb81c78bc2f4467acb5c6"
+    },
+    {
+      "file": "2026-10-09-00-0048.nc",
+      "size": 1156948,
+      "sha1": "cc7c61ad433449faf48ecec8dd7bec802240a3f0"
+    },
+    {
+      "file": "2026-10-09-00-0072.nc",
+      "size": 1156948,
+      "sha1": "ba3cd22ee672a713f268007d07fcaedb9a8e3cd5"
+    },
+    {
+      "file": "2026-10-09-00-0096.nc",
+      "size": 1156948,
+      "sha1": "034a044b6a8dbf5f569ef4c91ae632eb8c962e10"
+    },
+    {
+      "file": "2026-10-09-00-0120.nc",
+      "size": 1156948,
+      "sha1": "2285e13f38291c8e4cac632843ac1d928b7e9bbb"
+    },
+    {
+      "file": "2026-10-09-00-0144.nc",
+      "size": 1156948,
+      "sha1": "90ff91902338120ba3ebf63a625c00e65d11f37e"
+    },
+    {
+      "file": "2026-10-09-00-0168.nc",
+      "size": 1156948,
+      "sha1": "9b38f1ed7833a6aec69fbb4e9c1546691129d5ef"
+    },
+    {
+      "file": "2026-10-09-00-0192.nc",
+      "size": 1156948,
+      "sha1": "a2c93ca7208da12c56d41f83fe42dd7e4a4baa48"
+    },
+    {
+      "file": "2026-10-09-00-0216.nc",
+      "size": 1156948,
+      "sha1": "dde9c06753ca194a7b7c4ec57a35893428b7f1b5"
+    },
+    {
+      "file": "2026-10-09-00-0240.nc",
+      "size": 1156948,
+      "sha1": "62b0e90cf18bb72454565915804cabb42c326668"
+    },
+    {
+      "file": "2026-10-09-00-0264.nc",
+      "size": 1156948,
+      "sha1": "2effc656dd4b966b7e693cb38b5e9ec44d0cb0ba"
+    },
+    {
+      "file": "2026-10-09-00-0288.nc",
+      "size": 1156948,
+      "sha1": "45da520017950667a305c822473c7a546d9fc999"
+    },
+    {
+      "file": "2026-10-09-00-0312.nc",
+      "size": 1156948,
+      "sha1": "9e6632239e77c9b2fb6c8992e826f343767e2b52"
+    },
+    {
+      "file": "2026-10-09-00-0336.nc",
+      "size": 1156948,
+      "sha1": "47bfc6481c7353ada3f9c75f7851c07d318749fb"
+    },
+    {
+      "file": "2026-10-09-00-0360.nc",
+      "size": 1156948,
+      "sha1": "f200e3c934114a5c1a40b78839d50f9ff64e6012"
+    },
+    {
+      "file": "2026-10-09-00-0384.nc",
+      "size": 1156948,
+      "sha1": "8e89a1a8eca6b7a383e677d76da762d525c0a321"
+    },
+    {
+      "file": "2026-10-09-00-0408.nc",
+      "size": 1156948,
+      "sha1": "208a07520de155beb396d284e45fc53000c27668"
+    },
+    {
+      "file": "2026-10-09-00-0432.nc",
+      "size": 1156948,
+      "sha1": "54841279aba6f0acdfab65533677fc319d8e5814"
+    },
+    {
+      "file": "2026-10-09-00-0456.nc",
+      "size": 1156948,
+      "sha1": "fd1ea490d60fa3418861582f5d06b3f7ea0ab538"
+    },
+    {
+      "file": "2026-10-09-00-0480.nc",
+      "size": 1156948,
+      "sha1": "805bb21fd44906ce0efc1007e982f0f18e3f6f9c"
+    },
+    {
+      "file": "2026-10-09-00-0504.nc",
+      "size": 1156948,
+      "sha1": "c23d4c2ee25c173c34cc6c1cfe5f4441ddd37b81"
+    },
+    {
+      "file": "2026-10-09-00-0528.nc",
+      "size": 1156948,
+      "sha1": "d8fe715f421c11efd3ae2e1439adda4736ae6bad"
+    },
+    {
+      "file": "2026-10-09-00-0552.nc",
+      "size": 1156948,
+      "sha1": "ecc65fd4f905a41071187f68ae53b4da8a4322b3"
+    },
+    {
+      "file": "2026-10-09-00-0576.nc",
+      "size": 1156948,
+      "sha1": "41bcef0b6f02b833964c5a021ac9c5a7d7e6a1be"
+    },
+    {
+      "file": "2026-10-09-00-0600.nc",
+      "size": 1156948,
+      "sha1": "983a4e6a09d152d00bcca5e12213f131d4c68c22"
+    },
+    {
+      "file": "2026-10-09-00-0624.nc",
+      "size": 1156948,
+      "sha1": "0cd8ec9d1c2dbaa1b296898d22191da151548a97"
+    },
+    {
+      "file": "2026-10-09-00-0648.nc",
+      "size": 1156948,
+      "sha1": "1e3c6d1b1f60eddca0ce27098b7d9726c439702a"
+    },
+    {
+      "file": "2026-10-09-00-0672.nc",
+      "size": 1156948,
+      "sha1": "1a47cb4ea6fe4174a88955adcbd459f399c536b1"
+    },
+    {
+      "file": "2026-10-09-00-0696.nc",
+      "size": 1156948,
+      "sha1": "a154b584cbcb7acf89682c407819834210bd3b46"
+    },
+    {
+      "file": "2026-10-09-00-0720.nc",
+      "size": 1156948,
+      "sha1": "35cbff243e8e0db645551d9e8ac123459f48aef8"
+    },
+    {
+      "file": "2026-10-09-00-0744.nc",
+      "size": 1156948,
+      "sha1": "43e66898f3b50ad903c731567d5788710dd01bd3"
+    },
+    {
+      "file": "2026-10-09-00-0768.nc",
+      "size": 1156948,
+      "sha1": "76bc217d1483c422e213ece4aaec5d29e6e0d950"
+    },
+    {
+      "file": "2026-10-09-00-0792.nc",
+      "size": 1156948,
+      "sha1": "2869ae59ba98d905d2e56d82f1f192f7603617ba"
+    },
+    {
+      "file": "2026-10-09-00-0816.nc",
+      "size": 1156948,
+      "sha1": "c4790d59a0a9b4a5ce53d15bfd711912f4844ee2"
+    },
+    {
+      "file": "2026-10-09-00-0840.nc",
+      "size": 1156948,
+      "sha1": "452cf6dbafcdcc3449dd831fdda5940d9cbb348e"
+    },
+    {
+      "file": "2026-10-09-00-0864.nc",
+      "size": 1156948,
+      "sha1": "ef7bfa6df77819459b632b07f1c15e1df7912d8c"
+    },
+    {
+      "file": "2026-10-09-00-0888.nc",
+      "size": 1156948,
+      "sha1": "6acc78a8cf9eb1879ac07710b589f15563bcad21"
+    },
+    {
+      "file": "2026-10-09-00-0912.nc",
+      "size": 1156948,
+      "sha1": "38a83389a0be248eb1b4bcd3b961e312d44280fd"
+    },
+    {
+      "file": "2026-10-09-00-0936.nc",
+      "size": 1156948,
+      "sha1": "df0368e5abf3bde4ab4f8ba84c3c75b789001f42"
+    },
+    {
+      "file": "2026-10-09-00-0960.nc",
+      "size": 1156948,
+      "sha1": "71236b11ca63d265d7335f598c8cda3976252076"
+    },
+    {
+      "file": "2026-10-09-00-0984.nc",
+      "size": 1156948,
+      "sha1": "7d329c52fde9420c2982d768b0b1de6f1a0a76c9"
+    },
+    {
+      "file": "2026-10-09-00-1008.nc",
+      "size": 1156948,
+      "sha1": "aa7e9999a36ce802fe14a7e1d833621b90ef07bc"
+    },
+    {
+      "file": "2026-10-09-00-1032.nc",
+      "size": 1156948,
+      "sha1": "b8fd8cbf0b2f3349a4c4e504fcb96be649505ed7"
+    },
+    {
+      "file": "2026-10-09-00-1056.nc",
+      "size": 1156948,
+      "sha1": "cc78bae920e5733dc16c5d48c2a08128e1dd9f65"
+    },
+    {
+      "file": "2026-10-09-00-1080.nc",
+      "size": 1156948,
+      "sha1": "750d57da2ec6ec5ef68529f68e7a990348f32a11"
+    },
+    {
+      "file": "2026-10-09-00-1104.nc",
+      "size": 1156948,
+      "sha1": "622db4aa2a4599064f2e7d87560cf8761ef06d58"
+    }
+  ],
+  "provenance": {
+    "source_path": "C:/Users/USER/cumulus-gh/cumulus-backend/data/cumulus_data_2026-10-09/aurora/imerg/bilinear",
+    "model_type": "bilinear interpolation"
+  }
+}

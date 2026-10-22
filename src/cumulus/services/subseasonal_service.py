@@ -30,6 +30,7 @@ from cumulus.api.errors import (
 )
 from cumulus.settings import Settings
 from cumulus.subseasonal import geomask, legends, metrics
+from cumulus.subseasonal import observed as observed_rain
 from cumulus.subseasonal.ingest import (
     ACTIVE_FILE_NAME,
     MANIFEST_FILE_NAME,
@@ -57,13 +58,13 @@ LAYERS: dict[str, dict[str, Any]] = {
         "aggregations": ["total", "daily", "weekly"],
     },
     "dry_spell_days": {
-        "label": "Dry-spell days",
-        "description": "Days falling inside dry spells (≥{dry} consecutive days below {wet} mm).",
+        "label": "Dry spells",
+        "description": "Dry spells: at least {dry} days in a row below {wet} mm (the length can be changed).",
         "aggregations": ["total", "daily", "weekly"],
     },
     "wet_spell_days": {
-        "label": "Wet-spell days",
-        "description": "Days falling inside wet spells (≥{wetspell} consecutive days with ≥{wet} mm).",
+        "label": "Wet spells",
+        "description": "Wet spells: at least {wetspell} days in a row with {wet} mm or more (the length can be changed).",
         "aggregations": ["total", "daily", "weekly"],
     },
     # Flood risk: the chance (ensemble) or forecast (single run) of a very wet day.
@@ -104,9 +105,17 @@ ENSEMBLE_DAILY_LEGENDS = {
 }
 # A day counts as inside a spell (or as a rain day) in an ensemble series when at least half the members agree.
 CONSENSUS_PERCENT = 50.0
+# "A dry spell ahead": the chance one begins within this many days of the chosen day.
+SPELL_AHEAD_DAYS = 14
 SPREAD_QUANTILES = (10, 25, 50, 75, 90)
 # Ensemble rainfall on the map: the members' mean, their median, or the chance of reaching an amount.
 RAIN_STATS = ("mean", "median", "chance")
+# Spell layers, for a week or the whole run: the chance of a spell of the chosen length touching the
+# period (default), or the days inside such spells. A day always shows the chance of being in one.
+SPELL_STATS = ("chance", "days")
+SPELL_LAYERS = {"dry_spell_days": "dry", "wet_spell_days": "wet"}
+# Prepared spell fields kept per run, one per (kind, length) asked for.
+SPELL_FIELD_CACHE = 8
 # Amounts offered for "chance of at least", per period; a fixed list keeps the tile cache bounded.
 CHANCE_THRESHOLDS = {"daily": (10.0, 25.0, 50.0), "weekly": (25.0, 50.0, 100.0), "total": (100.0, 200.0, 300.0)}
 GUIDANCE = (
@@ -123,6 +132,10 @@ def _guidance(members: int) -> str:
     return ENSEMBLE_GUIDANCE.format(members=members) if members > 1 else GUIDANCE
 
 TILE_CACHE_SIZE = 2048
+# Bumped whenever tile rendering changes (2: opaque colours, matching the legend).
+TILE_STYLE_VERSION = 2
+# Prepared runs kept in memory (each ensemble run is tens of MB): enough to switch between models.
+PREPARED_RUNS = 6
 
 _LOAD_LOCK = RLock()
 # Prepared runs by cache key, so the runs list can reuse a run already in memory.
@@ -161,6 +174,28 @@ class PreparedRun:
     land_weights: np.ndarray | None = None
     area_matrices: dict[str, tuple[tuple[str, ...], np.ndarray]] = field(default_factory=dict)
     tile_cache: OrderedDict[tuple[Any, ...], bytes] = field(default_factory=OrderedDict)
+    # The configured spell lengths, kept when a series is asked for other lengths.
+    default_dry_spell_days: int | None = None
+    default_wet_spell_days: int | None = None
+    # Spell fields per (kind, length), built on demand: the user chooses the spell length.
+    spell_cache: OrderedDict[tuple[str, int], dict[str, np.ndarray]] = field(default_factory=OrderedDict)
+    # Observed rain (IMERG) written over the run's elapsed days, and what was forecast for them.
+    observations: observed_rain.RunObservations | None = None
+    forecast_daily: np.ndarray | None = None  # (observed_days, lat, lon) members' mean as forecast
+
+    @property
+    def observed_days(self) -> int:
+        """Leading lead days (1..n) that hold observations rather than forecast."""
+        return 0 if self.observations is None else min(self.observations.days, self.day_count)
+
+    @property
+    def lookback(self) -> np.ndarray | None:
+        """Observed rain (day, lat, lon) on the days just before the run, for spell detection."""
+        return None if self.observations is None else self.observations.lookback
+
+    @property
+    def observed_through(self) -> date | None:
+        return None if self.observations is None or not self.observed_days else self.observations.observed_through
 
     @property
     def day_count(self) -> int:
@@ -208,7 +243,7 @@ def load_run(settings: Settings, run_id: str | None = None) -> PreparedRun:
         key = _run_key(settings, resolved)
         run = _load_run_cached(*key)
         _PREPARED[key] = run
-        while len(_PREPARED) > 4:
+        while len(_PREPARED) > PREPARED_RUNS:
             _PREPARED.pop(next(iter(_PREPARED)))
         return run
 
@@ -232,10 +267,27 @@ def _run_key(settings: Settings, run_id: str) -> tuple[Any, ...]:
             int(config.onset_guard_max_dry_days),
         ),
         float(config.extreme_rain_mm),
+        _observed_key(settings),
     )
 
 
-@lru_cache(maxsize=4)
+def _observed_key(settings: Settings) -> tuple[Any, ...]:
+    """What the observed overlay depends on: the artifact (by version) and the rules for using it."""
+    config = settings.subseasonal.observed
+    current = observed_rain.version(config)
+    if not current:
+        return ()
+    return (str(config.artifact_dir), current, float(config.min_coverage), int(config.lookback_days))
+
+
+def _observed_config(observed_key: tuple[Any, ...]):
+    from cumulus.settings import ObservedRainConfig
+
+    artifact_dir, _version, min_coverage, lookback_days = observed_key
+    return ObservedRainConfig(artifact_dir=Path(artifact_dir), min_coverage=min_coverage, lookback_days=lookback_days)
+
+
+@lru_cache(maxsize=PREPARED_RUNS)
 def _load_run_cached(
     run_dir: str,
     _manifest_mtime: int,
@@ -246,6 +298,7 @@ def _load_run_cached(
     wet_spell_min_days: int,
     onset_rule: tuple[float, int, int, int] = (20.0, 3, 30, 10),
     extreme_rain_mm: float = 50.0,
+    observed_key: tuple[Any, ...] = (),
 ) -> PreparedRun:
     directory = Path(run_dir)
     manifest = json.loads((directory / MANIFEST_FILE_NAME).read_text(encoding="utf-8"))
@@ -258,6 +311,14 @@ def _load_run_cached(
     init_time = datetime.fromisoformat(manifest["init_time"])
     if init_time.tzinfo is None:
         init_time = init_time.replace(tzinfo=UTC)
+    # Elapsed days that have been observed are overwritten in every member before anything is
+    # derived, so chances, spells, onset, maps and series all agree on what actually fell.
+    observations = (
+        observed_rain.for_run(_observed_config(observed_key), init_time.date(), int(daily.shape[0]), latitudes, longitudes)
+        if observed_key
+        else None
+    )
+    members, daily, forecast_daily = observed_rain.apply(members, daily, observations)
 
     run = PreparedRun(
         run_id=str(manifest["run_id"]),
@@ -273,8 +334,14 @@ def _load_run_cached(
         onset_rule=dict(zip(("threshold_mm", "window_days", "guard_days", "guard_max_dry_days"), onset_rule)),
         extreme_rain_mm=extreme_rain_mm,
         members=members,
+        observations=observations,
+        forecast_daily=forecast_daily,
+        default_dry_spell_days=dry_spell_min_days,
+        default_wet_spell_days=wet_spell_min_days,
     )
     by_day = run.by_day()
+    lookback = run.lookback  # (day, lat, lon) observed before the run, or None
+    lookback_by_day = None if lookback is None else lookback[:, None]
     run.windows = metrics.weekly_windows(run.day_count)
     run.weekly = metrics.window_sums(daily, run.windows).astype(np.float32)
     if members is not None:
@@ -294,6 +361,7 @@ def _load_run_cached(
             wet_threshold_mm=wet_threshold_mm,
             dry_spell_min_days=dry_spell_min_days,
             wet_spell_min_days=wet_spell_min_days,
+            prefix=lookback_by_day,
         ).items()
     }
     run.indicator_daily, run.indicator_weekly = _indicator_fields(
@@ -303,19 +371,23 @@ def _load_run_cached(
         dry_spell_min_days=dry_spell_min_days,
         wet_spell_min_days=wet_spell_min_days,
         extreme_rain_mm=extreme_rain_mm,
+        lookback=lookback_by_day,
     )
     run.outlook["extreme_rain"] = _any_exceed_percent(by_day, extreme_rain_mm)
     run.onset = _ensemble_onset(run, by_day)
     run.outlook["onset"] = run.onset.day.astype(np.float32)
     weights = geomask.area_weights(areas)
     run.land_weights = weights.land
-    flat = by_day.reshape(run.day_count, run.member_count, -1).astype(float)
+    # One 2-D product (day x member, cell) @ (cell, area): a stacked 3-D matmul skips BLAS and took
+    # seconds for the 259 districts of a 10-member run.
+    flat = by_day.reshape(run.day_count * run.member_count, -1).astype(float)
     for level in ("region", "district"):
         names, matrix = weights.matrices[level]
         run.area_matrices[level] = (names, matrix)
         sums = matrix.sum(axis=1)
+        totals = (flat @ np.ascontiguousarray(matrix.T, dtype=float)).reshape(run.day_count, run.member_count, len(names))
         area_daily = np.divide(
-            flat @ matrix.T, sums, out=np.full((run.day_count, run.member_count, len(names)), np.nan), where=sums > 0
+            totals, sums, out=np.full((run.day_count, run.member_count, len(names)), np.nan), where=sums > 0
         )
         run.area_onset[level] = _ensemble_onset(run, area_daily).day
     return run
@@ -388,6 +460,7 @@ def _indicator_fields(
     dry_spell_min_days: int,
     wet_spell_min_days: int,
     extreme_rain_mm: float,
+    lookback: np.ndarray | None = None,
 ) -> tuple[dict[str, np.ndarray], dict[str, np.ndarray]]:
     """Daily shares and weekly counts per indicator, from rain shaped (day, member, lat, lon).
 
@@ -399,10 +472,12 @@ def _indicator_fields(
     """
     wet = metrics.wet_mask(by_day, wet_threshold_mm)
     dry = metrics.dry_mask(by_day, wet_threshold_mm)
+    wet_before = None if lookback is None else metrics.wet_mask(lookback, wet_threshold_mm)
+    dry_before = None if lookback is None else metrics.dry_mask(lookback, wet_threshold_mm)
     flags = {
         "rainy_days": wet,
-        "dry_spell_days": metrics.spell_day_mask(dry, dry_spell_min_days),
-        "wet_spell_days": metrics.spell_day_mask(wet, wet_spell_min_days),
+        "dry_spell_days": metrics.spell_day_mask(dry, dry_spell_min_days, dry_before),
+        "wet_spell_days": metrics.spell_day_mask(wet, wet_spell_min_days, wet_before),
         "extreme_rain": metrics.wet_mask(by_day, extreme_rain_mm),
     }
     missing = np.isnan(by_day)
@@ -449,6 +524,7 @@ class _SummaryView:
     onset_rule: dict[str, float]
     extreme_rain_mm: float = 50.0
     member_count: int = 1
+    observed_through: date | None = None
 
     @property
     def init_date(self) -> date:
@@ -466,13 +542,14 @@ def _summary_view(settings: Settings, run_id: str) -> _SummaryView:
             return _SummaryView(
                 cached.run_id, cached.manifest, cached.init_time, cached.day_count, cached.windows, daily_mean, weekly_mean,
                 cached.wet_threshold_mm, cached.dry_spell_min_days, cached.wet_spell_min_days, cached.onset_rule,
-                cached.extreme_rain_mm, cached.member_count,
+                cached.extreme_rain_mm, cached.member_count, cached.observed_through,
             )
-        manifest, init_time, daily_mean, windows, weekly_mean = _national_means_cached(
+        manifest, init_time, daily_mean, windows, weekly_mean, observed_through = _national_means_cached(
             str(run_dir),
             (run_dir / MANIFEST_FILE_NAME).stat().st_mtime_ns,
             str(settings.seasonal_map.district_geojson_path),
             str(config.artifact_dir),
+            _observed_key(settings),
         )
     return _SummaryView(
         str(manifest["run_id"]), manifest, init_time, int(daily_mean.size), windows, daily_mean, weekly_mean,
@@ -485,6 +562,7 @@ def _summary_view(settings: Settings, run_id: str) -> _SummaryView:
         },
         float(config.extreme_rain_mm),
         int(manifest.get("members") or 1),
+        observed_through,
     )
 
 
@@ -494,7 +572,7 @@ def _prepared_if_loaded(settings: Settings, run_id: str) -> PreparedRun | None:
 
 
 @lru_cache(maxsize=32)
-def _national_means_cached(run_dir: str, _manifest_mtime: int, geojson_path: str, mask_cache_dir: str):
+def _national_means_cached(run_dir: str, _manifest_mtime: int, geojson_path: str, mask_cache_dir: str, observed_key: tuple[Any, ...] = ()):
     directory = Path(run_dir)
     manifest = json.loads((directory / MANIFEST_FILE_NAME).read_text(encoding="utf-8"))
     with xr.open_dataset(directory / manifest.get("artifact", "rainfall.nc"), engine="scipy") as dataset:
@@ -507,6 +585,14 @@ def _national_means_cached(run_dir: str, _manifest_mtime: int, geojson_path: str
     init_time = datetime.fromisoformat(manifest["init_time"])
     if init_time.tzinfo is None:
         init_time = init_time.replace(tzinfo=UTC)
+    observations = (
+        observed_rain.for_run(_observed_config(observed_key), init_time.date(), int(daily.shape[0]), latitudes, longitudes)
+        if observed_key
+        else None
+    )
+    # Every member holds the same observed value, so overwriting the mean is the same thing.
+    _, daily, _ = observed_rain.apply(None, daily, observations)
+    observed_through = observations.observed_through if observations is not None and observations.days else None
     windows = metrics.weekly_windows(int(daily.shape[0]))
     weekly = metrics.window_sums(daily, windows)
 
@@ -514,7 +600,7 @@ def _national_means_cached(run_dir: str, _manifest_mtime: int, geojson_path: str
         flat = values.reshape(values.shape[0], -1).astype(float)
         return flat @ land / float(land.sum())
 
-    return manifest, init_time, _mean(daily), windows, _mean(weekly)
+    return manifest, init_time, _mean(daily), windows, _mean(weekly), observed_through
 
 
 def run_summary(settings: Settings, run: _SummaryView, *, active: bool) -> dict[str, Any]:
@@ -525,12 +611,16 @@ def run_summary(settings: Settings, run: _SummaryView, *, active: bool) -> dict[
     national_daily = run.national_daily
     national_weekly = run.national_weekly
     expected = int(manifest.get("expected_lead_days") or run.day_count)
+    source_id = manifest.get("source_id", config.source_id)
+    spec = config.models.get(source_id)
     return {
         "run_id": run.run_id,
         "active": active,
-        "source_id": manifest.get("source_id", config.source_id),
+        "source_id": source_id,
         "source_label": manifest.get("source_label", config.source_label),
         "model_label": manifest.get("model_label", config.model_label),
+        "family_label": spec.family_label if spec else None,
+        "downscaling_label": spec.downscaling_label if spec else None,
         "ensemble": manifest.get("ensemble", "deterministic"),
         "members": run.member_count,
         # A made-up demo run (not model output), so the viewer can label it.
@@ -549,7 +639,15 @@ def run_summary(settings: Settings, run: _SummaryView, *, active: bool) -> dict[
         "grid_resolution_degrees": manifest.get("grid", {}).get("resolution_degrees"),
         "bounds": manifest.get("bounds"),
         "thresholds": _thresholds(run),
-        "days": [_day_payload(run, day, round(float(value), 1)) for day, value in enumerate(national_daily, start=1)],
+        "spell_days_range": {
+            "dry": list(_spell_range(settings, "dry_spell_days")),
+            "wet": list(_spell_range(settings, "wet_spell_days")),
+        },
+        **_observed_payload(settings, run.observed_through),
+        "days": [
+            {**_day_payload(run, day, round(float(value), 1)), "observed": _is_observed(run, day)}
+            for day, value in enumerate(national_daily, start=1)
+        ],
         "weeks": [_window_payload(run, window, round(float(value), 1)) for window, value in zip(run.windows, national_weekly)],
         "layers": [
             {
@@ -573,8 +671,11 @@ class LayerSelection:
     aggregation: str
     index: int  # day (daily), week (weekly) or 1 (total)
     # Ensemble rainfall only: "mean", "median" or "chance" (with ``threshold`` mm); else "default".
+    # Spell layers: "spell_chance" or "spell_days" for a week or the whole run.
     stat: str = "default"
     threshold: float | None = None
+    # Spell layers: the spell length (at least this many days in a row).
+    spell_days: int | None = None
 
 
 def model_settings(settings: Settings, model: str | None) -> Settings:
@@ -609,6 +710,10 @@ def list_models(settings: Settings) -> dict[str, Any]:
                 "label": scoped.subseasonal.model_label,
                 "source_label": scoped.subseasonal.source_label,
                 "description": spec.description if spec else None,
+                "family": spec.family if spec else None,
+                "family_label": spec.family_label if spec else None,
+                "downscaling": spec.downscaling if spec else None,
+                "downscaling_label": spec.downscaling_label if spec else None,
                 "available": bool(run_ids),
                 "active_run_id": active,
                 "init_time": manifest.get("init_time"),
@@ -626,6 +731,8 @@ def resolve_selection(
     index: int | None,
     stat: str | None = None,
     threshold: float | None = None,
+    spell_days: int | None = None,
+    spell_days_range: tuple[int, int] = (2, 15),
 ) -> LayerSelection:
     layer_key = str(layer or "rainfall").strip().lower()
     if layer_key not in LAYERS:
@@ -638,6 +745,15 @@ def resolve_selection(
     resolved_index = 1 if aggregation_key == "total" else int(index or 1)
     if not 1 <= resolved_index <= limit:
         raise InvalidSubseasonalLayerError(f"Index {index} is out of range for {aggregation_key} (1-{limit}).")
+    if layer_key in SPELL_LAYERS:
+        kind = SPELL_LAYERS[layer_key]
+        length = _spell_length(run, kind, spell_days, spell_days_range)
+        if aggregation_key == "daily":
+            return LayerSelection(layer_key, aggregation_key, resolved_index, spell_days=length)
+        spell_stat = str(stat or "chance").strip().lower()
+        if spell_stat not in SPELL_STATS:
+            raise InvalidSubseasonalLayerError(f"Spell statistic must be one of: {', '.join(SPELL_STATS)}.")
+        return LayerSelection(layer_key, aggregation_key, resolved_index, f"spell_{spell_stat}", spell_days=length)
     if layer_key != "rainfall" or run.member_count == 1:
         # Only ensemble rainfall has a choice of statistic; anything asked of other layers is ignored.
         return LayerSelection(layer_key, aggregation_key, resolved_index)
@@ -653,6 +769,78 @@ def resolve_selection(
             f"Threshold for {aggregation_key} chance must be one of: {', '.join(_fmt(value) for value in allowed_thresholds)} mm."
         )
     return LayerSelection(layer_key, aggregation_key, resolved_index, stat_key, amount)
+
+
+def _with_spell_lengths(settings: Settings, run: PreparedRun, dry: int | None, wet: int | None) -> PreparedRun:
+    """The run seen with the user's spell lengths: every spell in a series (the list, the chances,
+    the counts, the thresholds it reports, so the advice too) uses them. Arrays are shared, not copied."""
+    if dry is None and wet is None:
+        return run
+    return replace(
+        run,
+        dry_spell_min_days=_spell_length(run, "dry", dry, _spell_range(settings, "dry_spell_days")),
+        wet_spell_min_days=_spell_length(run, "wet", wet, _spell_range(settings, "wet_spell_days")),
+    )
+
+
+def _spell_range(settings: Settings, layer: str | None) -> tuple[int, int]:
+    """The spell lengths a user may choose for this layer (dry or wet)."""
+    config = settings.subseasonal
+    kind = SPELL_LAYERS.get(str(layer or "").strip().lower())
+    low, high = config.wet_spell_days_range if kind == "wet" else config.dry_spell_days_range
+    return int(low), int(high)
+
+
+def _spell_length(run: PreparedRun, kind: str, requested: int | None, allowed: tuple[int, int]) -> int:
+    """The spell length asked for, or the run's own definition; out-of-range lengths are an error."""
+    default = run.dry_spell_min_days if kind == "dry" else run.wet_spell_min_days
+    if requested is None:
+        return int(default)
+    low, high = allowed
+    if not low <= int(requested) <= high:
+        raise InvalidSubseasonalLayerError(f"A {kind} spell length must be {low} to {high} days.")
+    return int(requested)
+
+
+def spell_fields(run: PreparedRun, kind: str, length: int) -> dict[str, np.ndarray]:
+    """Map fields for spells of at least ``length`` days, built once per (kind, length) and kept.
+
+    Spells are found in each member over its whole run, with observed days before the run
+    (``run.lookback``) so a spell already under way counts in full; then:
+
+    * ``daily`` (day, lat, lon): % of members with the day inside such a spell;
+    * ``weekly_days`` / ``total_days``: members' mean count of days inside such spells;
+    * ``weekly_chance`` / ``total_chance``: % of members with such a spell touching the week / run.
+    """
+    key = (kind, int(length))
+    cached = run.spell_cache.get(key)
+    if cached is not None:
+        run.spell_cache.move_to_end(key)
+        return cached
+    by_day = run.by_day()  # (day, member, lat, lon)
+    lookback = run.lookback
+    if kind == "dry":
+        condition = metrics.dry_mask(by_day, run.wet_threshold_mm)
+        before = None if lookback is None else metrics.dry_mask(lookback, run.wet_threshold_mm)[:, None]
+    else:
+        condition = metrics.wet_mask(by_day, run.wet_threshold_mm)
+        before = None if lookback is None else metrics.wet_mask(lookback, run.wet_threshold_mm)[:, None]
+    in_spell = metrics.spell_day_mask(condition, length, before)
+    missing = np.isnan(by_day)
+    flags = np.where(missing, np.nan, in_spell.astype(np.float32))
+    weekly = metrics.window_sums(flags, run.windows)  # (week, member, lat, lon)
+    total = np.where(np.all(missing, axis=0), np.nan, np.nansum(flags, axis=0))  # (member, lat, lon)
+    fields = {
+        "daily": (np.nanmean(flags, axis=1) * 100).astype(np.float32),
+        "weekly_days": np.nanmean(weekly, axis=1).astype(np.float32),
+        "weekly_chance": (np.nanmean(np.where(np.isnan(weekly), np.nan, weekly > 0), axis=1) * 100).astype(np.float32),
+        "total_days": np.nanmean(total, axis=0).astype(np.float32),
+        "total_chance": (np.nanmean(np.where(np.isnan(total), np.nan, total > 0), axis=0) * 100).astype(np.float32),
+    }
+    run.spell_cache[key] = fields
+    while len(run.spell_cache) > SPELL_FIELD_CACHE:
+        run.spell_cache.popitem(last=False)
+    return fields
 
 
 def onset_countdown(onset_day: np.ndarray, day: int) -> np.ndarray:
@@ -676,6 +864,14 @@ def layer_field(run: PreparedRun, selection: LayerSelection) -> np.ndarray:
             assert run.weekly is not None
             return run.weekly[selection.index - 1]
         return run.outlook["total"]
+    if selection.layer in SPELL_LAYERS:
+        spells = spell_fields(run, SPELL_LAYERS[selection.layer], int(selection.spell_days or 0))
+        if selection.aggregation == "daily":
+            return spells["daily"][selection.index - 1]
+        measure = "chance" if selection.stat == "spell_chance" else "days"
+        if selection.aggregation == "weekly":
+            return spells[f"weekly_{measure}"][selection.index - 1]
+        return spells[f"total_{measure}"]
     if selection.aggregation == "daily":
         return run.indicator_daily[selection.layer][selection.index - 1]
     if selection.aggregation == "weekly":
@@ -706,9 +902,10 @@ def get_layer(
     run_id: str | None,
     stat: str | None = None,
     threshold: float | None = None,
+    spell_days: int | None = None,
 ) -> dict[str, Any]:
     run = load_run(settings, run_id)
-    selection = resolve_selection(run, layer, aggregation, index, stat, threshold)
+    selection = resolve_selection(run, layer, aggregation, index, stat, threshold, spell_days, _spell_range(settings, layer))
     legend = _legend_for(run, selection)
     values = layer_field(run, selection)
     start_day, end_day = _selection_days(run, selection)
@@ -724,16 +921,25 @@ def get_layer(
             "min": _round(float(np.nanmin(land_values))) if land_values.size else None,
         }
     params: dict[str, Any] = {
+        # Tiles are cached for good; a new rendering style must change their address.
+        "v": TILE_STYLE_VERSION,
         "model": settings.subseasonal.source_id,
         "run_id": run.run_id,
         "layer": selection.layer,
         "aggregation": selection.aggregation,
         "index": selection.index,
     }
-    if selection.stat != "default":
+    if selection.stat != "default" and not selection.stat.startswith("spell_"):
         params["stat"] = selection.stat
     if selection.threshold is not None:
         params["threshold"] = _fmt(selection.threshold)
+    if selection.layer in SPELL_LAYERS:
+        params["spell_days"] = int(selection.spell_days or 0)
+        if selection.stat.startswith("spell_"):
+            params["stat"] = selection.stat.removeprefix("spell_")
+    if run.observations is not None:
+        # Tiles of a run are cached for good; new observations change what they show.
+        params["obs"] = run.observations.version
     query = urlencode(params)
     return {
         "run_id": run.run_id,
@@ -759,6 +965,11 @@ def get_layer(
         "statistic": _statistic(run, selection),
         "members": run.member_count,
         "threshold_mm": selection.threshold,
+        "spell_days": selection.spell_days,
+        "spell_stat": selection.stat.removeprefix("spell_") if selection.stat.startswith("spell_") else None,
+        # A daily map of an elapsed, observed day shows observed rain (IMERG), not forecast.
+        "observed": selection.aggregation == "daily" and selection.index <= run.observed_days,
+        "observed_days": run.observed_days,
         **_timeline(run, selection),
         "chance_thresholds": list(CHANCE_THRESHOLDS[selection.aggregation]) if selection.layer == "rainfall" and run.member_count > 1 else [],
     }
@@ -792,7 +1003,7 @@ def _statistic(run: PreparedRun, selection: LayerSelection) -> str:
         return "probability" if selection.stat == "chance" else selection.stat
     if selection.layer == "onset":
         return "median"
-    if selection.layer == "extreme_rain" or selection.aggregation == "daily":
+    if selection.layer == "extreme_rain" or selection.aggregation == "daily" or selection.stat == "spell_chance":
         return "probability"
     return "mean"
 
@@ -815,6 +1026,14 @@ def _legend_for(run: PreparedRun, selection: LayerSelection) -> legends.Legend:
         return _onset_legend(run.init_date, run.day_count)
     if selection.stat == "chance":
         return legends.RAIN_CHANCE
+    if selection.layer in SPELL_LAYERS:
+        kind = SPELL_LAYERS[selection.layer]
+        length = int(selection.spell_days or 0)
+        if selection.aggregation == "daily":
+            return _spell_daily_legend(kind, length, run.member_count > 1)
+        if selection.stat == "spell_chance":
+            return _spell_chance_legend(kind, length, "week" if selection.aggregation == "weekly" else "run")
+        return _spell_days_legend(kind, length, selection.aggregation)
     if selection.layer == "extreme_rain":
         if run.member_count > 1:
             return legends.EXTREME_RAIN_PROBABILITY
@@ -822,6 +1041,35 @@ def _legend_for(run: PreparedRun, selection: LayerSelection) -> legends.Legend:
     if run.member_count > 1 and selection.aggregation == "daily" and selection.layer in ENSEMBLE_DAILY_LEGENDS:
         return ENSEMBLE_DAILY_LEGENDS[selection.layer]
     return LAYER_LEGENDS[(selection.layer, selection.aggregation)]
+
+
+@lru_cache(maxsize=64)
+def _spell_daily_legend(kind: str, length: int, ensemble: bool) -> legends.Legend:
+    base = (legends.DRY_SPELL_PROBABILITY if kind == "dry" else legends.WET_SPELL_PROBABILITY) if ensemble else (
+        legends.DRY_SPELL_DAILY if kind == "dry" else legends.WET_SPELL_DAILY
+    )
+    note = (
+        f"Chance of being in a {kind} spell of {length}+ days; below 10% not shaded"
+        if ensemble
+        else f"Days outside a {kind} spell of {length}+ days not shaded"
+    )
+    return replace(base, key=f"{base.key}_{length}", note=note)
+
+
+@lru_cache(maxsize=64)
+def _spell_chance_legend(kind: str, length: int, period: str) -> legends.Legend:
+    base = legends.DRY_SPELL_PROBABILITY if kind == "dry" else legends.WET_SPELL_PROBABILITY
+    return replace(
+        base,
+        key=f"{kind}_spell_chance_{length}",
+        note=f"Chance of a {kind} spell of {length}+ days in this {period}; below 10% not shaded",
+    )
+
+
+@lru_cache(maxsize=64)
+def _spell_days_legend(kind: str, length: int, aggregation: str) -> legends.Legend:
+    base = LAYER_LEGENDS[(f"{kind}_spell_days", aggregation)]
+    return replace(base, key=f"{base.key}_{length}", note=f"Days inside {kind} spells of {length}+ days")
 
 
 @lru_cache(maxsize=8)
@@ -875,9 +1123,10 @@ def render_tile(
     run_id: str | None,
     stat: str | None = None,
     threshold: float | None = None,
+    spell_days: int | None = None,
 ) -> bytes:
     run = load_run(settings, run_id)
-    selection = resolve_selection(run, layer, aggregation, index, stat, threshold)
+    selection = resolve_selection(run, layer, aggregation, index, stat, threshold, spell_days, _spell_range(settings, layer))
     key = (selection, z, x, y)
     with _LOAD_LOCK:
         cached = run.tile_cache.get(key)
@@ -967,10 +1216,11 @@ def get_area_values(
     run_id: str | None,
     stat: str | None = None,
     threshold: float | None = None,
+    spell_days: int | None = None,
 ) -> dict[str, Any]:
     run = load_run(settings, run_id)
     level_key = _resolve_level(level)
-    selection = resolve_selection(run, layer, aggregation, index, stat, threshold)
+    selection = resolve_selection(run, layer, aggregation, index, stat, threshold, spell_days, _spell_range(settings, layer))
     names, matrix = run.area_matrices[level_key]
     if selection.layer == "onset":
         # A mean of onset days is not a date anyone would see; use the onset of the area's mean rain.
@@ -996,8 +1246,16 @@ def get_area_values(
 # --------------------------------------------------------------------------- point and area series
 
 
-def sample_point(settings: Settings, *, latitude: float, longitude: float, run_id: str | None) -> dict[str, Any]:
-    run = load_run(settings, run_id)
+def sample_point(
+    settings: Settings,
+    *,
+    latitude: float,
+    longitude: float,
+    run_id: str | None,
+    dry_spell_days: int | None = None,
+    wet_spell_days: int | None = None,
+) -> dict[str, Any]:
+    run = _with_spell_lengths(settings, load_run(settings, run_id), dry_spell_days, wet_spell_days)
     bounds = run.manifest.get("bounds") or {}
     if not (
         bounds.get("latitude_min", -90) <= latitude <= bounds.get("latitude_max", 90)
@@ -1015,7 +1273,9 @@ def sample_point(settings: Settings, *, latitude: float, longitude: float, run_i
     member_series = None if run.members is None else run.members[:, :, row, col].astype(float)
     cell_weights = np.zeros(run.latitudes.size * run.longitudes.size)
     cell_weights[row * run.longitudes.size + col] = 1.0
-    payload = _series_payload(run, series, member_series)
+    lookback = None if run.lookback is None else run.lookback[:, row, col].astype(float)
+    forecast = None if run.forecast_daily is None else run.forecast_daily[:, row, col].astype(float)
+    payload = _series_payload(run, series, member_series, lookback=lookback, forecast=forecast)
     _attach_local_chances(run, payload, cell_weights)
     return {
         "kind": "point",
@@ -1033,8 +1293,16 @@ def sample_point(settings: Settings, *, latitude: float, longitude: float, run_i
     }
 
 
-def sample_area(settings: Settings, *, level: str, name: str, run_id: str | None) -> dict[str, Any]:
-    run = load_run(settings, run_id)
+def sample_area(
+    settings: Settings,
+    *,
+    level: str,
+    name: str,
+    run_id: str | None,
+    dry_spell_days: int | None = None,
+    wet_spell_days: int | None = None,
+) -> dict[str, Any]:
+    run = _with_spell_lengths(settings, load_run(settings, run_id), dry_spell_days, wet_spell_days)
     level_key = _resolve_level(level)
     names, matrix = run.area_matrices[level_key]
     lookup = {item.casefold(): position for position, item in enumerate(names)}
@@ -1054,7 +1322,13 @@ def sample_area(settings: Settings, *, level: str, name: str, run_id: str | None
     else:
         region = names[position]
     cells_touched = int(np.count_nonzero(weights))
-    payload = _series_payload(run, series, member_series)
+
+    def _area_mean(values: np.ndarray | None) -> np.ndarray | None:
+        return None if values is None else values.reshape(values.shape[0], -1).astype(float) @ weights / total_weight
+
+    payload = _series_payload(
+        run, series, member_series, lookback=_area_mean(run.lookback), forecast=_area_mean(run.forecast_daily)
+    )
     _attach_local_chances(run, payload, weights)
     return {
         "kind": level_key,
@@ -1093,6 +1367,7 @@ def _attach_local_chances(run: PreparedRun, payload: dict[str, Any], cell_weight
     values = run.by_day().reshape(run.day_count, run.member_count, -1)[:, :, cells].astype(float)  # (day, member, cell)
     finite = np.isfinite(values)
     rain = np.where(finite, values, 0.0)
+    before = None if run.lookback is None else run.lookback.reshape(run.lookback.shape[0], -1)[:, cells][:, None].astype(float)
 
     def share(mask: np.ndarray) -> np.ndarray:
         """% of members per cell (member axis -2), averaged over the cells with the place's weights."""
@@ -1118,34 +1393,69 @@ def _attach_local_chances(run: PreparedRun, payload: dict[str, Any], cell_weight
     wet = rain >= run.wet_threshold_mm
     dry = finite & (rain < run.wet_threshold_mm)
     wet_share = share(wet)
-    dry_spell_share = share(metrics.spell_day_mask(dry, run.dry_spell_min_days))
-    wet_spell_share = share(metrics.spell_day_mask(wet, run.wet_spell_min_days))
+    in_dry, dry_starts = metrics.spell_masks(
+        dry, run.dry_spell_min_days, None if before is None else metrics.dry_mask(before, run.wet_threshold_mm)
+    )
+    in_wet, wet_starts = metrics.spell_masks(
+        wet, run.wet_spell_min_days, None if before is None else metrics.wet_mask(before, run.wet_threshold_mm)
+    )
+    dry_spell_share = share(in_dry)
+    wet_spell_share = share(in_wet)
+    # The chance a spell begins on each day, and that one begins within the next two weeks: the
+    # "spells ahead" view, next to the chance of being in one.
+    dry_start_share = share(dry_starts)
+    wet_start_share = share(wet_starts)
+    dry_ahead_share = share(metrics.starts_within(dry_starts, SPELL_AHEAD_DAYS))
+    wet_ahead_share = share(metrics.starts_within(wet_starts, SPELL_AHEAD_DAYS))
     ensemble = run.member_count > 1
     for position, day in enumerate(payload["days"]):
         if ensemble:
             day["wet_prob"] = _round(float(wet_share[position]), 0)
             day["spell_prob"] = {"dry": _round(float(dry_spell_share[position]), 0), "wet": _round(float(wet_spell_share[position]), 0)}
+        day["spell_start_prob"] = {"dry": _round(float(dry_start_share[position]), 0), "wet": _round(float(wet_start_share[position]), 0)}
+        day["spell_ahead_prob"] = {"dry": _round(float(dry_ahead_share[position]), 0), "wet": _round(float(wet_ahead_share[position]), 0)}
         day["chance"] = day_chance[position]
         day["total_by_date"] = by_date[position]
         day["extreme_prob"] = _round(float(extreme_daily[position]), 0)
         day["extreme_by_date"] = _round(float(extreme_cumulative[position]), 0)
     week_chance = keyed(weekly_amounts, [share(weekly_rain >= amount) for amount in weekly_amounts])
     extreme_week = share(extreme_weekly)
+    # A spell of the chosen length touching each week, and anywhere in the run, as on the map.
+    dry_week = share(metrics.window_sums(in_dry.astype(float), run.windows) > 0)
+    wet_week = share(metrics.window_sums(in_wet.astype(float), run.windows) > 0)
     for position, week in enumerate(payload["weeks"]):
         week["chance"] = week_chance[position]
         week["extreme_prob"] = _round(float(extreme_week[position]), 0)
+        week["spell_chance"] = {"dry": _round(float(dry_week[position]), 0), "wet": _round(float(wet_week[position]), 0)}
+    payload["spell_chance_total"] = {
+        "dry": _round(float(share(in_dry.any(axis=0))), 0),
+        "wet": _round(float(share(in_wet.any(axis=0))), 0),
+    }
     payload["total_chance"] = {_fmt(amount): _round(float(share(running[-1] >= amount)), 0) for amount in total_amounts}
+    payload["spell_ahead_days"] = SPELL_AHEAD_DAYS
 
 
-def _series_payload(run: PreparedRun, series: np.ndarray, member_series: np.ndarray | None = None) -> dict[str, Any]:
+def _series_payload(
+    run: PreparedRun,
+    series: np.ndarray,
+    member_series: np.ndarray | None = None,
+    *,
+    lookback: np.ndarray | None = None,
+    forecast: np.ndarray | None = None,
+) -> dict[str, Any]:
     """Daily and weekly series, outlook counts, spells and onset for one place.
 
     ``series`` is the single run or the ensemble mean. With ``member_series`` (member, day) the
     counts are averaged over members, each day carries the members' spread and the share in a
     spell, and spells are the runs of days where at least half of the members are in one.
+    ``lookback`` is observed rain on the days just before the run (spells under way at the start
+    count in full); ``forecast`` is what had been forecast for the elapsed, observed days.
     """
     if member_series is not None and member_series.shape[0] > 1:
-        return _ensemble_series_payload(run, np.asarray(series, dtype=float), np.asarray(member_series, dtype=float))
+        payload = _ensemble_series_payload(
+            run, np.asarray(series, dtype=float), np.asarray(member_series, dtype=float), lookback=lookback
+        )
+        return _mark_observed(run, payload, forecast)
     series = np.asarray(series, dtype=float)
     weekly = metrics.window_sums(series, run.windows)
     outlook = metrics.outlook_metrics(
@@ -1153,15 +1463,19 @@ def _series_payload(run: PreparedRun, series: np.ndarray, member_series: np.ndar
         wet_threshold_mm=run.wet_threshold_mm,
         dry_spell_min_days=run.dry_spell_min_days,
         wet_spell_min_days=run.wet_spell_min_days,
+        prefix=lookback,
     )
     spells = metrics.find_spells(
         series,
         wet_threshold_mm=run.wet_threshold_mm,
         dry_spell_min_days=run.dry_spell_min_days,
         wet_spell_min_days=run.wet_spell_min_days,
+        prefix=lookback,
     )
-    dry_days = metrics.spell_day_mask(metrics.dry_mask(series, run.wet_threshold_mm), run.dry_spell_min_days)
-    wet_days = metrics.spell_day_mask(metrics.wet_mask(series, run.wet_threshold_mm), run.wet_spell_min_days)
+    dry_before = None if lookback is None else metrics.dry_mask(lookback, run.wet_threshold_mm)
+    wet_before = None if lookback is None else metrics.wet_mask(lookback, run.wet_threshold_mm)
+    dry_days = metrics.spell_day_mask(metrics.dry_mask(series, run.wet_threshold_mm), run.dry_spell_min_days, dry_before)
+    wet_days = metrics.spell_day_mask(metrics.wet_mask(series, run.wet_threshold_mm), run.wet_spell_min_days, wet_before)
     extreme = metrics.wet_mask(series, run.extreme_rain_mm)
     days = []
     for position, value in enumerate(series):
@@ -1170,7 +1484,7 @@ def _series_payload(run: PreparedRun, series: np.ndarray, member_series: np.ndar
         payload["spell"] = "dry" if dry_days[position] else ("wet" if wet_days[position] else None)
         payload["extreme_prob"] = 100.0 if extreme[position] else 0.0
         days.append(payload)
-    return {
+    return _mark_observed(run, {
         "run_id": run.run_id,
         "init_time": run.init_time,
         "unit": "mm",
@@ -1190,12 +1504,31 @@ def _series_payload(run: PreparedRun, series: np.ndarray, member_series: np.ndar
         "thresholds": _thresholds(run),
         "guidance": GUIDANCE,
         "members": 1,
-    }
+    }, forecast)
 
 
-def _ensemble_series_payload(run: PreparedRun, series: np.ndarray, member_series: np.ndarray) -> dict[str, Any]:
+def _mark_observed(run: PreparedRun, payload: dict[str, Any], forecast: np.ndarray | None) -> dict[str, Any]:
+    """Flags the elapsed days that hold observed rain, with what had been forecast for them."""
+    observed_days = run.observed_days
+    for position, day in enumerate(payload["days"]):
+        observed = position < observed_days
+        day["observed"] = observed
+        if observed and forecast is not None and position < len(forecast):
+            day["forecast_value"] = _round(float(forecast[position]))
+    for week in payload["weeks"]:
+        week["observed_days"] = max(0, min(int(week["end_day"]), observed_days) - int(week["start_day"]) + 1)
+    payload["observed_days"] = observed_days
+    payload["observed_through"] = run.observed_through
+    payload["observed_source"] = run.observations.source_label if run.observations is not None and observed_days else None
+    return payload
+
+
+def _ensemble_series_payload(
+    run: PreparedRun, series: np.ndarray, member_series: np.ndarray, *, lookback: np.ndarray | None = None
+) -> dict[str, Any]:
     by_day = member_series.T  # (day, member)
     member_count = by_day.shape[1]
+    before = None if lookback is None else np.asarray(lookback, dtype=float)[:, None]  # (day, 1)
     weekly = metrics.window_sums(series, run.windows)
     member_weekly = metrics.window_sums(by_day, run.windows)  # (week, member)
     outlook = metrics.outlook_metrics(
@@ -1203,10 +1536,19 @@ def _ensemble_series_payload(run: PreparedRun, series: np.ndarray, member_series
         wet_threshold_mm=run.wet_threshold_mm,
         dry_spell_min_days=run.dry_spell_min_days,
         wet_spell_min_days=run.wet_spell_min_days,
+        prefix=before,
     )
     wet = metrics.wet_mask(by_day, run.wet_threshold_mm)
-    in_dry = metrics.spell_day_mask(metrics.dry_mask(by_day, run.wet_threshold_mm), run.dry_spell_min_days)
-    in_wet = metrics.spell_day_mask(wet, run.wet_spell_min_days)
+    dry_before = None if before is None else metrics.dry_mask(before, run.wet_threshold_mm)
+    wet_before = None if before is None else metrics.wet_mask(before, run.wet_threshold_mm)
+    in_dry = metrics.spell_day_mask(metrics.dry_mask(by_day, run.wet_threshold_mm), run.dry_spell_min_days, dry_before)
+    in_wet = metrics.spell_day_mask(wet, run.wet_spell_min_days, wet_before)
+    # Whether the observed day before the run was already dry (or wet): then a spell open on day 1
+    # was under way before the forecast began; without observations that is unknown.
+    spell_before = {
+        "dry": None if before is None else _continues_from_before(metrics.dry_mask(before, run.wet_threshold_mm)),
+        "wet": None if before is None else _continues_from_before(metrics.wet_mask(before, run.wet_threshold_mm)),
+    }
     extreme = metrics.wet_mask(by_day, run.extreme_rain_mm)
     wet_share = wet.mean(axis=1) * 100
     dry_share = in_dry.mean(axis=1) * 100
@@ -1214,6 +1556,13 @@ def _ensemble_series_payload(run: PreparedRun, series: np.ndarray, member_series
     extreme_share = extreme.mean(axis=1) * 100
     consensus_dry = dry_share >= CONSENSUS_PERCENT
     consensus_wet = wet_spell_share >= CONSENSUS_PERCENT
+    # Each member's days in a dry spell, in a wet spell and with rain, week by week (week, member):
+    # counted per member like the map's weekly layers, so the drawer can show their spread as box plots.
+    member_day_counts = {
+        "dry_spell": metrics.window_sums(in_dry.astype(float), run.windows),
+        "wet_spell": metrics.window_sums(in_wet.astype(float), run.windows),
+        "rainy": metrics.window_sums(wet.astype(float), run.windows),
+    }
     days = []
     for position, value in enumerate(series):
         payload = _day_payload(run, position + 1, _round(float(value)))
@@ -1230,13 +1579,18 @@ def _ensemble_series_payload(run: PreparedRun, series: np.ndarray, member_series
         payload = _window_payload(run, window, _round(float(value)))
         payload["spread"] = _spread(member_weekly[position])
         payload["members"] = _member_values(member_weekly[position])
+        payload["day_counts"] = {key: _spread(counts[position]) for key, counts in member_day_counts.items()}
         weeks.append(payload)
     max_day = int(np.nanargmax(series)) + 1 if series.size else None
     spells = []
     for kind, consensus, member_mask in (("dry", consensus_dry, in_dry), ("wet", consensus_wet, in_wet)):
         for start, end in _true_runs(consensus):
             spell = metrics.Spell(
-                kind=kind, start_day=start, end_day=end, open_start=start == 1, open_end=end == run.day_count
+                kind=kind,
+                start_day=start,
+                end_day=end,
+                open_start=start == 1 and spell_before[kind] is not False,
+                open_end=end == run.day_count,
             )
             payload = _spell_payload(run, spell, series)
             # Members with any spell day inside this stretch.
@@ -1265,6 +1619,13 @@ def _ensemble_series_payload(run: PreparedRun, series: np.ndarray, member_series
         "members": member_count,
         "member_totals": _member_values(np.nansum(by_day, axis=0)),
     }
+
+
+def _continues_from_before(condition_before: np.ndarray) -> bool:
+    """True when the observed day just before the run meets the spell's condition, so a spell open
+    on day 1 began before the forecast rather than on its first day."""
+    flags = np.asarray(condition_before, dtype=bool).reshape(condition_before.shape[0], -1)
+    return bool(flags.shape[0] and flags[-1].mean() >= 0.5)
 
 
 def _member_values(values: np.ndarray) -> list[float | None]:
@@ -1355,6 +1716,9 @@ def _thresholds(run: Any) -> dict[str, Any]:
         "wet_day_mm": run.wet_threshold_mm,
         "dry_spell_min_days": run.dry_spell_min_days,
         "wet_spell_min_days": run.wet_spell_min_days,
+        # The official definitions, when the series was asked for other spell lengths.
+        "default_dry_spell_days": getattr(run, "default_dry_spell_days", None) or run.dry_spell_min_days,
+        "default_wet_spell_days": getattr(run, "default_wet_spell_days", None) or run.wet_spell_min_days,
         "onset_mm": float(rule["threshold_mm"]),
         "onset_window_days": int(rule["window_days"]),
         "onset_guard_days": int(rule["guard_days"]),
@@ -1368,6 +1732,23 @@ def _land_mean(run: PreparedRun, values: np.ndarray) -> np.ndarray:
     assert weights is not None
     flat = values.reshape(values.shape[0], -1).astype(float)
     return flat @ weights.ravel() / float(weights.sum())
+
+
+def _observed_payload(settings: Settings, observed_through: date | None) -> dict[str, Any]:
+    """How far observations reach into the run, where they come from, and a version for caching."""
+    config = settings.subseasonal.observed
+    current = observed_rain.load(config) if observed_through else None
+    return {
+        "observed_through": observed_through,
+        "observed_source": (current.source_label if current else config.source_label) if observed_through else None,
+        "observed_version": current.version if current else None,
+        "observed_synthetic": bool(current.synthetic) if current else False,
+    }
+
+
+def _is_observed(run: Any, day: int) -> bool:
+    through = getattr(run, "observed_through", None)
+    return bool(through and metrics.rain_day(run.init_date, day) <= through)
 
 
 def _day_payload(run: PreparedRun, day: int, value: float | None) -> dict[str, Any]:
@@ -1413,6 +1794,15 @@ def _selection_title(run: PreparedRun, selection: LayerSelection) -> str:
         label = "Rainfall (ensemble median)"
     elif selection.stat == "chance":
         label = f"Chance of {_fmt(float(selection.threshold or 0))} mm or more"
+    elif selection.layer in SPELL_LAYERS:
+        kind = SPELL_LAYERS[selection.layer]
+        length = selection.spell_days
+        if selection.aggregation == "daily":
+            label = f"In a {kind} spell of {length}+ days"
+        elif selection.stat == "spell_chance":
+            label = f"Chance of a {kind} spell of {length}+ days"
+        else:
+            label = f"Days in {kind} spells of {length}+ days"
     if selection.aggregation == "daily":
         return f"{label} · {start:%a} {_day_month(start)}"
     if selection.aggregation == "weekly":

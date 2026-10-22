@@ -38,6 +38,7 @@ from cumulus.subseasonal import geomask
 from cumulus.subseasonal.sources import (
     AzureBlobSasSource,
     LeadFile,
+    MEMBER_DIR_PATTERN,
     LocalFolderSource,
     RunSource,
     SourceError,
@@ -153,7 +154,12 @@ def ingest_run(
     dataset, details = load_raw_run(paths, settings)
     run_id = run_id_for(settings.subseasonal.source_id, details["init_time"])
     out_dir = source_dir(settings) / run_id
-    provenance = build_provenance(getattr(source, "location", ""), details.get("source_attrs") or {})
+    spec = settings.subseasonal.models.get(settings.subseasonal.source_id)
+    provenance = build_provenance(
+        getattr(source, "location", ""), details.get("source_attrs") or {}, known=spec.provenance if spec else None
+    )
+    if details.get("members", 1) > 1:
+        provenance.setdefault("ensemble_size", int(details["members"]))
     artifact_path, manifest_path = write_artifact(
         dataset, details, out_dir, settings, run_id=run_id, source_label=source.label, provenance=provenance
     )
@@ -219,11 +225,11 @@ def _unchanged_run(settings: Settings, lead_files: list[LeadFile]) -> str | None
     except (OSError, json.JSONDecodeError):
         return None
     recorded_sizes = {entry.get("file"): entry.get("size") for entry in recorded}
-    if set(recorded_sizes) != {item.name for item in lead_files}:
+    if set(recorded_sizes) != {item.key for item in lead_files}:
         return None
     # Older manifests have no sizes; compare them only where both sides know one.
     for item in lead_files:
-        known = recorded_sizes[item.name]
+        known = recorded_sizes[item.key]
         if known is not None and item.size is not None and int(known) != item.size:
             return None
     return run_id
@@ -248,7 +254,11 @@ def _existing_result(settings: Settings, run_id: str, *, promote: bool) -> Inges
 
 
 def load_raw_run(paths: list[Path], settings: Settings) -> tuple[xr.Dataset, dict[str, Any]]:
-    """Open, validate and stack per-lead files into a clipped Ghana (lead_day, lat, lon) dataset."""
+    """Open, validate and stack per-lead files into a clipped Ghana (lead_day, lat, lon) dataset.
+
+    Members come either inside each file (a member dimension) or as ``member_###`` folders that
+    each hold a full set of lead files; both end up as one (member, lead_day, lat, lon) stack.
+    """
     try:
         import h5netcdf  # noqa: F401
         import h5py  # noqa: F401
@@ -256,64 +266,36 @@ def load_raw_run(paths: list[Path], settings: Settings) -> tuple[xr.Dataset, dic
         raise IngestError("Reading raw IFS-UNet files needs h5netcdf and h5py: pip install -e .[ingest]") from exc
 
     config = settings.subseasonal
-    bounds = config.bounds
-    fields: list[np.ndarray] = []
-    leads: list[int] = []
-    init_times: set[datetime] = set()
-    reference_axes: tuple[np.ndarray, np.ndarray] | None = None
-    checksums: list[dict[str, Any]] = []
-    variable_name: str | None = None
-    source_attrs: dict[str, str] = {}
-    member_count: int | None = None
+    groups: dict[str | None, list[Path]] = {}
+    for path in paths:
+        groups.setdefault(member_folder(path), []).append(path)
+    if None in groups and len(groups) > 1:
+        raise IngestError("The run mixes lead files in member folders with lead files outside them.")
 
-    for path in sorted(paths):
-        with xr.open_dataset(path, engine="h5netcdf") as raw:
-            name = next((alias for alias in config.variable_aliases if alias in raw.data_vars), None)
-            if name is None:
-                raise IngestError(f"{path.name}: none of {config.variable_aliases} found (has {list(raw.data_vars)}).")
-            variable_name = variable_name or name
-            if not source_attrs:
-                source_attrs = _global_attrs(raw)
-            raw = _normalize_coords(raw)
-            init_time = _init_time(raw, path)
-            lead_hours = _lead_hours(raw, init_time, path)
-            field = raw[name]
-            if "time" in field.dims:
-                if field.sizes["time"] != 1:
-                    raise IngestError(f"{path.name}: expected a single time step, found {field.sizes['time']}.")
-                field = field.isel(time=0)
-            member_dim = next((dim for dim in MEMBER_DIMS if dim in field.dims), None)
-            if member_dim is not None:
-                field = field.rename({member_dim: "member"}).transpose("member", "latitude", "longitude")
-            extra_dims = set(field.dims) - {"member", "latitude", "longitude"}
-            if extra_dims:
-                raise IngestError(f"{path.name}: unexpected dimensions {sorted(extra_dims)} on {name}.")
-            file_members = int(field.sizes.get("member", 1))
-            if member_count is None:
-                member_count = file_members
-            elif file_members != member_count:
-                raise IngestError(f"{path.name}: {file_members} ensemble members, other lead files have {member_count}.")
-            if "member" not in field.dims:
-                field = field.expand_dims("member")
-            field = field.sortby("latitude").sortby("longitude")
-            field = field.sel(
-                latitude=slice(bounds.latitude_min - 1e-6, bounds.latitude_max + 1e-6),
-                longitude=slice(bounds.longitude_min - 1e-6, bounds.longitude_max + 1e-6),
-            )
-            if field.sizes["latitude"] < 2 or field.sizes["longitude"] < 2:
-                raise IngestError(f"{path.name}: the file does not cover the Ghana window.")
-            axes = (np.round(field["latitude"].values.astype(float), 4), np.round(field["longitude"].values.astype(float), 4))
-            if reference_axes is None:
-                reference_axes = axes
-            elif not (np.array_equal(axes[0], reference_axes[0]) and np.array_equal(axes[1], reference_axes[1])):
-                raise IngestError(f"{path.name}: grid differs from the other lead files.")
-            fields.append(np.asarray(field.values, dtype=np.float32))
+    init_times: set[datetime] = set()
+    reference: dict[str, Any] = {}
+    checksums: list[dict[str, Any]] = []
+    member_stacks: list[np.ndarray] = []
+    lead_sets: list[list[int]] = []
+    for member in sorted(groups, key=lambda key: key or ""):
+        fields: list[np.ndarray] = []
+        leads: list[int] = []
+        for path in sorted(groups[member]):
+            field, lead_hours, init_time = _read_lead_file(path, config, reference)
+            fields.append(field)
             leads.append(lead_hours)
             init_times.add(init_time)
-            checksums.append({"file": path.name, "size": path.stat().st_size, "sha1": _sha1(path)})
+            key = f"{member}/{path.name}" if member else path.name
+            checksums.append({"file": key, "size": path.stat().st_size, "sha1": _sha1(path)})
+        order = np.argsort(leads, kind="stable")
+        member_stacks.append(np.stack([fields[index] for index in order], axis=1))  # (member, lead_day, lat, lon)
+        lead_sets.append([leads[index] for index in order])
 
     if len(init_times) != 1:
         raise IngestError(f"Lead files mix init times: {sorted(t.isoformat() for t in init_times)}.")
+    leads = lead_sets[0]
+    if any(other != leads for other in lead_sets[1:]):
+        raise IngestError("Ensemble member folders do not all hold the same lead days.")
     if any(hours % 24 for hours in leads):
         raise IngestError(f"Lead times must be whole days; got hours {leads}.")
     lead_days = [hours // 24 for hours in leads]
@@ -326,12 +308,12 @@ def load_raw_run(paths: list[Path], settings: Settings) -> tuple[xr.Dataset, dic
     if len(lead_days) < config.min_lead_days:
         raise IngestError(f"Run has {len(lead_days)} lead days; at least {config.min_lead_days} are required.")
 
-    stacked = np.stack(fields, axis=1)  # (member, lead_day, lat, lon)
+    stacked = np.concatenate(member_stacks, axis=0)  # (member, lead_day, lat, lon)
     negative_fraction = float(np.mean(stacked < 0))
     stacked = np.clip(stacked, 0.0, None)
     # Round to the packing precision now so stats and the stored artifact agree exactly.
     stacked = np.round(stacked / PACK_SCALE) * PACK_SCALE
-    assert reference_axes is not None
+    latitudes, longitudes = reference["axes"]
     init_time = next(iter(init_times))
     coords: dict[str, Any] = {}
     if stacked.shape[0] > 1:
@@ -347,21 +329,75 @@ def load_raw_run(paths: list[Path], settings: Settings) -> tuple[xr.Dataset, dic
         coords={
             **coords,
             "lead_day": np.asarray(lead_days, dtype=np.int32),
-            "latitude": reference_axes[0].astype(np.float32),
-            "longitude": reference_axes[1].astype(np.float32),
+            "latitude": latitudes.astype(np.float32),
+            "longitude": longitudes.astype(np.float32),
         },
     )
     details = {
         "init_time": init_time,
-        "variable": variable_name,
+        "variable": reference["variable"],
         "negative_fraction_clipped": round(negative_fraction, 4),
         "max_mm": round(float(np.nanmax(stacked)), 1),
         "checksums": checksums,
         "expected_lead_days": int(config.expected_lead_days),
-        "source_attrs": source_attrs,
+        "source_attrs": reference.get("source_attrs") or {},
         "members": int(stacked.shape[0]),
     }
     return dataset, details
+
+
+def member_folder(path: Path) -> str | None:
+    """The ``member_###`` folder a lead file sits in, or None for a file in the run folder itself."""
+    return path.parent.name if MEMBER_DIR_PATTERN.match(path.parent.name) else None
+
+
+def _read_lead_file(path: Path, config: Any, reference: dict[str, Any]) -> tuple[np.ndarray, int, datetime]:
+    """One lead file as a clipped (member, lat, lon) array, its lead hours and init time.
+
+    ``reference`` carries what the first file established (variable, grid, members per file,
+    global attributes); every later file is checked against it.
+    """
+    bounds = config.bounds
+    with xr.open_dataset(path, engine="h5netcdf") as raw:
+        name = next((alias for alias in config.variable_aliases if alias in raw.data_vars), None)
+        if name is None:
+            raise IngestError(f"{path.name}: none of {config.variable_aliases} found (has {list(raw.data_vars)}).")
+        reference.setdefault("variable", name)
+        if "source_attrs" not in reference:
+            reference["source_attrs"] = _global_attrs(raw)
+        raw = _normalize_coords(raw)
+        init_time = _init_time(raw, path)
+        lead_hours = _lead_hours(raw, init_time, path)
+        field = raw[name]
+        if "time" in field.dims:
+            if field.sizes["time"] != 1:
+                raise IngestError(f"{path.name}: expected a single time step, found {field.sizes['time']}.")
+            field = field.isel(time=0)
+        member_dim = next((dim for dim in MEMBER_DIMS if dim in field.dims), None)
+        if member_dim is not None:
+            field = field.rename({member_dim: "member"}).transpose("member", "latitude", "longitude")
+        extra_dims = set(field.dims) - {"member", "latitude", "longitude"}
+        if extra_dims:
+            raise IngestError(f"{path.name}: unexpected dimensions {sorted(extra_dims)} on {name}.")
+        file_members = int(field.sizes.get("member", 1))
+        if reference.setdefault("members_per_file", file_members) != file_members:
+            raise IngestError(
+                f"{path.name}: {file_members} ensemble members, other lead files have {reference['members_per_file']}."
+            )
+        if "member" not in field.dims:
+            field = field.expand_dims("member")
+        field = field.sortby("latitude").sortby("longitude")
+        field = field.sel(
+            latitude=slice(bounds.latitude_min - 1e-6, bounds.latitude_max + 1e-6),
+            longitude=slice(bounds.longitude_min - 1e-6, bounds.longitude_max + 1e-6),
+        )
+        if field.sizes["latitude"] < 2 or field.sizes["longitude"] < 2:
+            raise IngestError(f"{path.name}: the file does not cover the Ghana window.")
+        axes = (np.round(field["latitude"].values.astype(float), 4), np.round(field["longitude"].values.astype(float), 4))
+        known = reference.setdefault("axes", axes)
+        if not (np.array_equal(axes[0], known[0]) and np.array_equal(axes[1], known[1])):
+            raise IngestError(f"{path.name}: grid differs from the other lead files.")
+        return np.asarray(field.values, dtype=np.float32), lead_hours, init_time
 
 
 # Names upstream may give the ensemble-member dimension.
@@ -382,9 +418,11 @@ def _global_attrs(raw: xr.Dataset) -> dict[str, str]:
     return attrs
 
 
-def build_provenance(location: str, source_attrs: dict[str, str]) -> dict[str, Any]:
-    """Which downscaling model produced the run: parsed from the source path, plus the raw attributes."""
+def build_provenance(location: str, source_attrs: dict[str, str], known: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Which downscaling model produced the run: what the model registry knows, overridden by what
+    the source path itself encodes, plus the raw file attributes."""
     provenance: dict[str, Any] = {"source_path": location} if location else {}
+    provenance.update(known or {})
     provenance.update(parse_model_path(location))
     if source_attrs:
         provenance["source_attrs"] = source_attrs
@@ -410,7 +448,7 @@ def write_artifact(
             "long_name": "24-hour accumulated precipitation",
             "units": "mm",
             "cell_methods": "time: sum (interval: 24 hours)",
-            "comment": "Lead day d accumulates from init + (d-1)*24h to init + d*24h. Negative UNet values clipped to 0.",
+            "comment": "Lead day d accumulates from init + (d-1)*24h to init + d*24h. Negative values (UNet and Aurora artefacts) clipped to 0.",
         }
     )
     out["lead_day"].attrs.update({"long_name": "forecast lead day", "units": "1"})

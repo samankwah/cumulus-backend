@@ -126,9 +126,12 @@ forecast_products:
         forecast_year: 2026
         title: Seasonal Rainfall Total
 subseasonal:
-  # ECMWF IFS extended-range runs downscaled with a UNet (46 daily leads; one run or an ensemble).
-  source_id: ifs_unet
-  model_label: IFS-UNet
+  # Sub-seasonal (S2S) runs downscaled to 0.1 degrees over Africa (46 daily leads; one run or an
+  # ensemble). The default model: Aurora with the IMERG-calibrated precipitation head, downscaled
+  # with the UNet. The labels below are fallbacks; each model's entry in `models` sets its own.
+  source_id: aurora_imerg_unet
+  model_label: Aurora-IMERG · UNet
+  source_label: Aurora (IMERG head) · UNet downscaled
   wet_day_threshold_mm: 1.0
   dry_spell_min_days: 5
   wet_spell_min_days: 3
@@ -143,21 +146,114 @@ subseasonal:
   expected_lead_days: 46
   retention_runs: 10
   stale_after_days: 3
-  azure_prefix: Unet/
-  # The model picker. Runs of each model are kept apart under data/artifacts/subseasonal/<id>/.
+  azure_prefix: aurora/imerg/unet/
+  # The model picker: each S2S source (family) x downscaler. Runs of each model are kept apart
+  # under data/artifacts/subseasonal/<id>/. Azure prefixes other than Unet/ follow the layout of
+  # the 2026-10-09 sample bundle and are to be confirmed with the modelling team.
   models:
+    aurora_imerg_unet:
+      model_label: Aurora-IMERG · UNet
+      source_label: Aurora (IMERG head) · UNet downscaled
+      family: aurora_imerg
+      family_label: Aurora · IMERG head
+      downscaling: unet
+      downscaling_label: UNet
+      azure_prefix: aurora/imerg/unet/
+      sas_secret: AURORA_SAS_URL
+      description: Microsoft Aurora with the precipitation head calibrated to IMERG, downscaled to 0.1° with a deterministic UNet.
+      provenance: {model_type: unet}
+    aurora_imerg_diffusion:
+      model_label: Aurora-IMERG · Diffusion
+      source_label: Aurora (IMERG head) · diffusion UNet downscaled (ensemble)
+      family: aurora_imerg
+      family_label: Aurora · IMERG head
+      downscaling: diffusion
+      downscaling_label: Diffusion
+      azure_prefix: aurora/imerg/diffusion_members/
+      sas_secret: AURORA_SAS_URL
+      description: Aurora (IMERG head) downscaled with a diffusion UNet; each member is an independent sample.
+      provenance: &diffusion_provenance
+        model_type: diffusion_unet
+        model_dir: model_diffusion_unet_precip_input_output_residual_shiftedlog_calibrated_silu_selfcond_precip24h_only
+        checkpoint: ckpt-diffusion-722-precip-fs64-lr1e-4-100k-100000
+        checkpoint_step: 100000
+        sampler: heun
+        sampler_steps: 20
+        guidance_scale: 3
+    aurora_imerg_bilinear:
+      model_label: Aurora-IMERG · Bilinear
+      source_label: Aurora (IMERG head) · bilinear interpolation
+      family: aurora_imerg
+      family_label: Aurora · IMERG head
+      downscaling: bilinear
+      downscaling_label: Bilinear
+      azure_prefix: aurora/imerg/bilinear/
+      sas_secret: AURORA_SAS_URL
+      description: Aurora (IMERG head) interpolated bilinearly to 0.1°, with no machine learning; the baseline the downscalers improve on.
+      provenance: &bilinear_provenance {model_type: bilinear interpolation}
+    aurora_era5_unet:
+      model_label: Aurora-ERA5 · UNet
+      source_label: Aurora (ERA5 head) · UNet downscaled
+      family: aurora_era5
+      family_label: Aurora · ERA5 head
+      downscaling: unet
+      downscaling_label: UNet
+      azure_prefix: aurora/era5/unet/
+      sas_secret: AURORA_SAS_URL
+      description: Microsoft Aurora with the precipitation head calibrated to ERA5, downscaled to 0.1° with a deterministic UNet.
+      provenance: {model_type: unet}
+    aurora_era5_diffusion:
+      model_label: Aurora-ERA5 · Diffusion
+      source_label: Aurora (ERA5 head) · diffusion UNet downscaled (ensemble)
+      family: aurora_era5
+      family_label: Aurora · ERA5 head
+      downscaling: diffusion
+      downscaling_label: Diffusion
+      azure_prefix: aurora/era5/diffusion_members/
+      sas_secret: AURORA_SAS_URL
+      description: Aurora (ERA5 head) downscaled with a diffusion UNet; each member is an independent sample.
+      provenance: *diffusion_provenance
+    aurora_era5_bilinear:
+      model_label: Aurora-ERA5 · Bilinear
+      source_label: Aurora (ERA5 head) · bilinear interpolation
+      family: aurora_era5
+      family_label: Aurora · ERA5 head
+      downscaling: bilinear
+      downscaling_label: Bilinear
+      azure_prefix: aurora/era5/bilinear/
+      sas_secret: AURORA_SAS_URL
+      description: Aurora (ERA5 head) interpolated bilinearly to 0.1°, with no machine learning.
+      provenance: *bilinear_provenance
     ifs_unet:
       model_label: IFS-UNet
       source_label: ECMWF IFS · UNet downscaled
+      family: ifs
+      family_label: ECMWF IFS
+      downscaling: unet
+      downscaling_label: UNet
       azure_prefix: Unet/
+      sas_secret: IFS_UNET_SAS_URL
       description: ECMWF IFS extended range, downscaled to 0.1° with a deterministic UNet.
+      provenance: {model_type: unet, checkpoint: unet_africa-050000, checkpoint_step: 50000}
     ifs_diffusion:
       model_label: IFS-Diffusion
       source_label: ECMWF IFS · diffusion UNet downscaled (ensemble)
+      family: ifs
+      family_label: ECMWF IFS
+      downscaling: diffusion
+      downscaling_label: Diffusion
       azure_prefix: Diffusion/
-      description: ECMWF IFS extended range, downscaled with a diffusion UNet; one run per ensemble member.
-    aurora:
-      model_label: Aurora
-      source_label: Aurora · downscaled
-      azure_prefix: aurora/
-      description: Aurora forecasts downscaled for West Africa. Data to be supplied by the modelling team.
+      sas_secret: IFS_DIFFUSION_SAS_URL
+      description: ECMWF IFS extended range, downscaled with a diffusion UNet; each member is an independent sample.
+      provenance: *diffusion_provenance
+    ifs_bilinear:
+      model_label: IFS · Bilinear
+      source_label: ECMWF IFS · bilinear interpolation
+      family: ifs
+      family_label: ECMWF IFS
+      downscaling: bilinear
+      downscaling_label: Bilinear
+      azure_prefix: ifs/bilinear/
+      sas_secret: IFS_UNET_SAS_URL
+      description: ECMWF IFS extended range interpolated bilinearly to 0.1°, with no machine learning.
+      provenance: *bilinear_provenance

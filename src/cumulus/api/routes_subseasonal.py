@@ -35,6 +35,9 @@ SHORT_CACHE = "public, max-age=300"
 MODEL_QUERY = Query(default=None, description="Model id from /subseasonal/models; default: the configured model.")
 STAT_QUERY = Query(default=None, description="Ensemble rainfall only: mean, median or chance.")
 THRESHOLD_QUERY = Query(default=None, ge=0, description="With stat=chance: the amount (mm) members must reach.")
+SPELL_DAYS_QUERY = Query(default=None, ge=1, description="Spell layers: the spell length, at least this many days in a row.")
+DRY_SPELL_DAYS_QUERY = Query(default=None, ge=1, description="Series: the dry spell length to use (default: the configured one).")
+WET_SPELL_DAYS_QUERY = Query(default=None, ge=1, description="Series: the wet spell length to use (default: the configured one).")
 
 
 @router.get("/models", response_model=SubseasonalModelsResponse)
@@ -59,6 +62,7 @@ def subseasonal_layer_endpoint(
     model: str | None = MODEL_QUERY,
     stat: str | None = STAT_QUERY,
     threshold: float | None = THRESHOLD_QUERY,
+    spell_days: int | None = SPELL_DAYS_QUERY,
 ) -> SubseasonalLayerResponse:
     response.headers["Cache-Control"] = IMMUTABLE_CACHE if run_id else SHORT_CACHE
     payload = get_layer(
@@ -69,6 +73,7 @@ def subseasonal_layer_endpoint(
         run_id=run_id,
         stat=stat,
         threshold=threshold,
+        spell_days=spell_days,
     )
     return SubseasonalLayerResponse(**payload)
 
@@ -85,6 +90,7 @@ def subseasonal_tile_endpoint(
     model: str | None = MODEL_QUERY,
     stat: str | None = STAT_QUERY,
     threshold: float | None = THRESHOLD_QUERY,
+    spell_days: int | None = SPELL_DAYS_QUERY,
 ) -> Response:
     png_bytes = render_tile(
         model_settings(get_settings(), model),
@@ -97,6 +103,7 @@ def subseasonal_tile_endpoint(
         run_id=run_id,
         stat=stat,
         threshold=threshold,
+        spell_days=spell_days,
     )
     return Response(
         content=png_bytes,
@@ -116,6 +123,7 @@ def subseasonal_area_values_endpoint(
     model: str | None = MODEL_QUERY,
     stat: str | None = STAT_QUERY,
     threshold: float | None = THRESHOLD_QUERY,
+    spell_days: int | None = SPELL_DAYS_QUERY,
 ) -> SubseasonalAreaValuesResponse:
     response.headers["Cache-Control"] = IMMUTABLE_CACHE if run_id else SHORT_CACHE
     payload = get_area_values(
@@ -127,6 +135,7 @@ def subseasonal_area_values_endpoint(
         run_id=run_id,
         stat=stat,
         threshold=threshold,
+        spell_days=spell_days,
     )
     return SubseasonalAreaValuesResponse(**payload)
 
@@ -138,9 +147,18 @@ def subseasonal_sample_endpoint(
     longitude: float = Query(..., ge=-180.0, le=180.0),
     run_id: str | None = Query(default=None),
     model: str | None = MODEL_QUERY,
+    dry_spell_days: int | None = DRY_SPELL_DAYS_QUERY,
+    wet_spell_days: int | None = WET_SPELL_DAYS_QUERY,
 ) -> SubseasonalSeriesResponse:
     response.headers["Cache-Control"] = IMMUTABLE_CACHE if run_id else SHORT_CACHE
-    payload = sample_point(model_settings(get_settings(), model), latitude=latitude, longitude=longitude, run_id=run_id)
+    payload = sample_point(
+        model_settings(get_settings(), model),
+        latitude=latitude,
+        longitude=longitude,
+        run_id=run_id,
+        dry_spell_days=dry_spell_days,
+        wet_spell_days=wet_spell_days,
+    )
     return SubseasonalSeriesResponse(**payload)
 
 
@@ -151,7 +169,16 @@ def subseasonal_area_endpoint(
     name: str = Query(..., min_length=1),
     run_id: str | None = Query(default=None),
     model: str | None = MODEL_QUERY,
+    dry_spell_days: int | None = DRY_SPELL_DAYS_QUERY,
+    wet_spell_days: int | None = WET_SPELL_DAYS_QUERY,
 ) -> SubseasonalSeriesResponse:
     response.headers["Cache-Control"] = IMMUTABLE_CACHE if run_id else SHORT_CACHE
-    payload = sample_area(model_settings(get_settings(), model), level=level, name=name, run_id=run_id)
+    payload = sample_area(
+        model_settings(get_settings(), model),
+        level=level,
+        name=name,
+        run_id=run_id,
+        dry_spell_days=dry_spell_days,
+        wet_spell_days=wet_spell_days,
+    )
     return SubseasonalSeriesResponse(**payload)

@@ -5,16 +5,18 @@ name: Ingest 46-day runs
 # and commits the lot in one commit, which redeploys the API. A run already ingested from the
 # same files changes nothing, so the job only commits (and redeploys) when something is new.
 #
-# One repository secret per model, each a container SAS URL with Read + List permission
-# (https://<account>.blob.core.windows.net/<container>?sv=...&sig=...); the folder inside the
-# container is the model's azure_prefix in configs/base.yaml:
-#   IFS_UNET_SAS_URL       -> ifs_unet       (Unet/)
-#   IFS_DIFFUSION_SAS_URL  -> ifs_diffusion  (Diffusion/; may be the same URL as IFS-UNet's)
-#   AURORA_SAS_URL         -> aurora         (aurora/)
+# The models, their folders and their secrets all come from `subseasonal.models` in
+# configs/base.yaml: each model names the repository secret holding its container SAS URL
+# (`sas_secret`, Read + List permission:
+# https://<account>.blob.core.windows.net/<container>?sv=...&sig=...) and its folder inside
+# the container (`azure_prefix`). Today:
+#   IFS_UNET_SAS_URL       -> ifs_unet (Unet/), ifs_bilinear
+#   IFS_DIFFUSION_SAS_URL  -> ifs_diffusion (may be the same URL as IFS-UNet's)
+#   AURORA_SAS_URL         -> aurora_imerg_* and aurora_era5_* (unet, diffusion, bilinear)
 # A model whose secret is not set is skipped with a warning. Once any model fails, an issue
 # labelled "ingest-failure" is opened (or commented on).
 #
-# The first real IFS-Diffusion run also deletes the synthetic demo run kept for that model.
+# The first real run of a model also deletes any synthetic demo run kept for it.
 
 on:
   schedule:
@@ -25,7 +27,7 @@ on:
   workflow_dispatch:
     inputs:
       model:
-        description: "Model to ingest (ifs_unet, ifs_diffusion, aurora). Leave empty for all."
+        description: "Model id to ingest (see subseasonal.models in configs/base.yaml, e.g. aurora_imerg_unet). Leave empty for all."
         required: false
       init_date:
         description: "Run to ingest (YYYY-MM-DD). Leave empty for the newest complete run."
@@ -61,29 +63,34 @@ jobs:
       - name: Ingest
         id: ingest
         env:
-          IFS_UNET_SAS_URL: ${{ secrets.IFS_UNET_SAS_URL }}
-          IFS_DIFFUSION_SAS_URL: ${{ secrets.IFS_DIFFUSION_SAS_URL }}
-          AURORA_SAS_URL: ${{ secrets.AURORA_SAS_URL }}
+          # All repository secrets as JSON (values stay masked in the log); each model picks its own.
+          SECRETS_JSON: ${{ toJSON(secrets) }}
           ONLY_MODEL: ${{ github.event.inputs.model }}
           INIT_DATE: ${{ github.event.inputs.init_date }}
           FORCE: ${{ github.event.inputs.force }}
         run: |
-          # Models run one after another, so a single commit carries every new run.
-          declare -A secrets=(
-            [ifs_unet]="$IFS_UNET_SAS_URL"
-            [ifs_diffusion]="$IFS_DIFFUSION_SAS_URL"
-            [aurora]="$AURORA_SAS_URL"
+          # "<model id> <secret name>" for every model in the registry, in registry order.
+          mapfile -t models < <(python - <<'PY'
+          from cumulus.settings import get_settings
+          for model_id, spec in get_settings().subseasonal.models.items():
+              print(model_id, spec.sas_secret or "")
+          PY
           )
-          declare -A secret_names=([ifs_unet]=IFS_UNET_SAS_URL [ifs_diffusion]=IFS_DIFFUSION_SAS_URL [aurora]=AURORA_SAS_URL)
           failed=()
           ingested=()
-          for model in ifs_unet ifs_diffusion aurora; do
+          # Models run one after another, so a single commit carries every new run.
+          for entry in "${models[@]}"; do
+            read -r model secret_name <<<"$entry"
             if [ -n "$ONLY_MODEL" ] && [ "$ONLY_MODEL" != "$model" ]; then
               continue
             fi
-            if [ -z "${secrets[$model]}" ]; then
+            sas_url=""
+            if [ -n "$secret_name" ]; then
+              sas_url=$(python -c 'import json, os, sys; print(json.loads(os.environ["SECRETS_JSON"]).get(sys.argv[1], ""))' "$secret_name")
+            fi
+            if [ -z "$sas_url" ]; then
               # Not configured yet: skip quietly instead of failing (and opening an issue) on every run.
-              echo "::warning::Repository secret ${secret_names[$model]} is not set; skipping $model."
+              echo "::warning::Repository secret ${secret_name:-<none in configs/base.yaml>} is not set; skipping $model."
               continue
             fi
             args=(--model "$model" --source azure)
@@ -96,7 +103,7 @@ jobs:
               args+=(--force)
             fi
             echo "::group::$model"
-            if CUMULUS_SUBSEASONAL__AZURE_SAS_URL="${secrets[$model]}" python -m cumulus.subseasonal.ingest "${args[@]}"; then
+            if CUMULUS_SUBSEASONAL__AZURE_SAS_URL="$sas_url" python -m cumulus.subseasonal.ingest "${args[@]}"; then
               ingested+=("$model")
             else
               echo "::error::Ingest failed for $model."

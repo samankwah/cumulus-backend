@@ -1,0 +1,320 @@
+{
+  "schema_version": 1,
+  "run_id": "aurora_era5_unet_2026102100",
+  "source_id": "aurora_era5_unet",
+  "source_label": "Aurora (ERA5 head) \u00b7 UNet downscaled",
+  "model_label": "Aurora-ERA5 \u00b7 UNet",
+  "ensemble": "deterministic",
+  "members": 1,
+  "variable": "precip",
+  "raw_variable": "precip_24h",
+  "unit": "mm",
+  "init_time": "2026-10-21T00:00:00+00:00",
+  "lead_days": [
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    8,
+    9,
+    10,
+    11,
+    12,
+    13,
+    14,
+    15,
+    16,
+    17,
+    18,
+    19,
+    20,
+    21,
+    22,
+    23,
+    24,
+    25,
+    26,
+    27,
+    28,
+    29,
+    30,
+    31,
+    32,
+    33,
+    34,
+    35,
+    36,
+    37,
+    38,
+    39,
+    40,
+    41,
+    42,
+    43,
+    44,
+    45,
+    46
+  ],
+  "expected_lead_days": 46,
+  "first_rain_day": "2026-10-21",
+  "last_rain_day": "2026-12-05",
+  "grid": {
+    "shape": [
+      81,
+      61
+    ],
+    "resolution_degrees": 0.1
+  },
+  "bounds": {
+    "latitude_min": 4.0,
+    "latitude_max": 12.0,
+    "longitude_min": -4.0,
+    "longitude_max": 2.0
+  },
+  "quality": {
+    "negative_fraction_clipped": 0.001,
+    "max_mm": 71.9
+  },
+  "artifact": "rainfall.nc",
+  "ingested_at": "2026-10-24T03:05:08+00:00",
+  "ingested_from": "local:aurora_era5_unet",
+  "source_files": [
+    {
+      "file": "2026-10-21-00-0024.nc",
+      "size": 1156948,
+      "sha1": "c6d46a5c0d6d49e4fb403c2728fc0e7b8085c234"
+    },
+    {
+      "file": "2026-10-21-00-0048.nc",
+      "size": 1156948,
+      "sha1": "90a6fbc645871150a0867d8fdfd7f05563f5a5ae"
+    },
+    {
+      "file": "2026-10-21-00-0072.nc",
+      "size": 1156948,
+      "sha1": "d1aa2dddffbe4ac1c198e75ebde500003cd71ee0"
+    },
+    {
+      "file": "2026-10-21-00-0096.nc",
+      "size": 1156948,
+      "sha1": "a844899f7c981095fe7087e3645b231a7d4f4738"
+    },
+    {
+      "file": "2026-10-21-00-0120.nc",
+      "size": 1156948,
+      "sha1": "d7af4fc2eb7817dc8af160bf798464d11644581c"
+    },
+    {
+      "file": "2026-10-21-00-0144.nc",
+      "size": 1156948,
+      "sha1": "bf7fe81c6594ebd6d5084fa1d3371c5378346219"
+    },
+    {
+      "file": "2026-10-21-00-0168.nc",
+      "size": 1156948,
+      "sha1": "7013cfdc10830dedf053d39eea8cf4534737766a"
+    },
+    {
+      "file": "2026-10-21-00-0192.nc",
+      "size": 1156948,
+      "sha1": "7b6a715cd47060bb8a70b141d515bd74e0fe9a1e"
+    },
+    {
+      "file": "2026-10-21-00-0216.nc",
+      "size": 1156948,
+      "sha1": "b990ba788c331b35d5f11e29142a094efa737559"
+    },
+    {
+      "file": "2026-10-21-00-0240.nc",
+      "size": 1156948,
+      "sha1": "c2f7f80ef30648b02d470915cb6a5afb9c39c652"
+    },
+    {
+      "file": "2026-10-21-00-0264.nc",
+      "size": 1156948,
+      "sha1": "1315e9f4d3669f506961ea4966d3e0a526d932e0"
+    },
+    {
+      "file": "2026-10-21-00-0288.nc",
+      "size": 1156948,
+      "sha1": "480f240299d31c654e1aa866f7d02012f9dfe21b"
+    },
+    {
+      "file": "2026-10-21-00-0312.nc",
+      "size": 1156948,
+      "sha1": "2d43a34348dc801f0b2a20beb21bf541637bcf66"
+    },
+    {
+      "file": "2026-10-21-00-0336.nc",
+      "size": 1156948,
+      "sha1": "da0b57b131b6252b713c46fb5a02ac58b54a25b4"
+    },
+    {
+      "file": "2026-10-21-00-0360.nc",
+      "size": 1156948,
+      "sha1": "4c64fcbb805d863a3016c0020d620366168725d3"
+    },
+    {
+      "file": "2026-10-21-00-0384.nc",
+      "size": 1156948,
+      "sha1": "99f182bb65e8665d639800e35b4e699d840ab7e9"
+    },
+    {
+      "file": "2026-10-21-00-0408.nc",
+      "size": 1156948,
+      "sha1": "f19ef70950bc9ef0f1bc9f712301611daebd8863"
+    },
+    {
+      "file": "2026-10-21-00-0432.nc",
+      "size": 1156948,
+      "sha1": "58588d54515fb2a916f8d24ae44c150290ad7a09"
+    },
+    {
+      "file": "2026-10-21-00-0456.nc",
+      "size": 1156948,
+      "sha1": "c2b774478ed17e84a70c72c4648b8906ca6afef1"
+    },
+    {
+      "file": "2026-10-21-00-0480.nc",
+      "size": 1156948,
+      "sha1": "845bd0a2a38393d46ab79ecce70fb8543fdb5273"
+    },
+    {
+      "file": "2026-10-21-00-0504.nc",
+      "size": 1156948,
+      "sha1": "57c7d28c324d4b107c7edf939a5f14b9b248ec4a"
+    },
+    {
+      "file": "2026-10-21-00-0528.nc",
+      "size": 1156948,
+      "sha1": "5cb3e3a37ab02e8a777c2e795747428a323521e8"
+    },
+    {
+      "file": "2026-10-21-00-0552.nc",
+      "size": 1156948,
+      "sha1": "fa789fa6402b62b8cf74923005c4a2da70561c47"
+    },
+    {
+      "file": "2026-10-21-00-0576.nc",
+      "size": 1156948,
+      "sha1": "4d143819a43a4f12e5bbad42d230c38b783a53e6"
+    },
+    {
+      "file": "2026-10-21-00-0600.nc",
+      "size": 1156948,
+      "sha1": "d10972b25c1380891a94618e3fa4f03c37d293a4"
+    },
+    {
+      "file": "2026-10-21-00-0624.nc",
+      "size": 1156948,
+      "sha1": "076427744c42083ed8edd5bfbcec7143654a6533"
+    },
+    {
+      "file": "2026-10-21-00-0648.nc",
+      "size": 1156948,
+      "sha1": "1ab3908533d5ac190f7c38deb628fb864daa9a56"
+    },
+    {
+      "file": "2026-10-21-00-0672.nc",
+      "size": 1156948,
+      "sha1": "c905942b6d0de41d48b5539fb311f8a998c6ebdb"
+    },
+    {
+      "file": "2026-10-21-00-0696.nc",
+      "size": 1156948,
+      "sha1": "15c9991925b04f84ce84f3b47a2f336b7d70d023"
+    },
+    {
+      "file": "2026-10-21-00-0720.nc",
+      "size": 1156948,
+      "sha1": "245215feea6972f3df54791b493f1d9e2e6761b2"
+    },
+    {
+      "file": "2026-10-21-00-0744.nc",
+      "size": 1156948,
+      "sha1": "79b1725e828544f0c358cc16757c3346cb4abe3c"
+    },
+    {
+      "file": "2026-10-21-00-0768.nc",
+      "size": 1156948,
+      "sha1": "a80963687e5e67a243f7d1ba39acaefaff598269"
+    },
+    {
+      "file": "2026-10-21-00-0792.nc",
+      "size": 1156948,
+      "sha1": "3c33d2542b1a6aaa013aa00e9df4691dbd2c94ea"
+    },
+    {
+      "file": "2026-10-21-00-0816.nc",
+      "size": 1156948,
+      "sha1": "a4c4ab15371ffb8fe6b9587a105f28d17c524d7b"
+    },
+    {
+      "file": "2026-10-21-00-0840.nc",
+      "size": 1156948,
+      "sha1": "e8acdf17a2850756044572964269164eb704bace"
+    },
+    {
+      "file": "2026-10-21-00-0864.nc",
+      "size": 1156948,
+      "sha1": "67109326fbea40460e75fcf370635f14a4f719eb"
+    },
+    {
+      "file": "2026-10-21-00-0888.nc",
+      "size": 1156948,
+      "sha1": "5a73da5352eaba94200fe50850438f201d10db7f"
+    },
+    {
+      "file": "2026-10-21-00-0912.nc",
+      "size": 1156948,
+      "sha1": "f28fac0835d9b8c993303451a1ec99faa89a38b3"
+    },
+    {
+      "file": "2026-10-21-00-0936.nc",
+      "size": 1156948,
+      "sha1": "86329b21166ce77de6d96a3f3c6bbd2da9509f8b"
+    },
+    {
+      "file": "2026-10-21-00-0960.nc",
+      "size": 1156948,
+      "sha1": "d60bf7ed077b1bcbc13f7585fd8fd86ed6b7dddb"
+    },
+    {
+      "file": "2026-10-21-00-0984.nc",
+      "size": 1156948,
+      "sha1": "872755ff9752c785b2ae1712ce9f97350f6b2e2c"
+    },
+    {
+      "file": "2026-10-21-00-1008.nc",
+      "size": 1156948,
+      "sha1": "38e6eaa71499abfdcabd78dde0c708a8af5c7079"
+    },
+    {
+      "file": "2026-10-21-00-1032.nc",
+      "size": 1156948,
+      "sha1": "025b269bdc0772a5a636028606dfce41e863e1cb"
+    },
+    {
+      "file": "2026-10-21-00-1056.nc",
+      "size": 1156948,
+      "sha1": "69701a90595634d2f2100b7e1c7c9b9dbcc946e5"
+    },
+    {
+      "file": "2026-10-21-00-1080.nc",
+      "size": 1156948,
+      "sha1": "81fa35c5697363b2b15f59b6f5fa3c5209791f34"
+    },
+    {
+      "file": "2026-10-21-00-1104.nc",
+      "size": 1156948,
+      "sha1": "9ae3310de08d049009b18f1c83e2d4bb354342f9"
+    }
+  ],
+  "provenance": {
+    "source_path": "/tmp/claude-1000/-home-pdavies-Documents-seasonal-fcst-backend/3206bc07-80a3-4c34-b7ad-2cf01225b372/scratchpad/stage-2026-10-21/aurora_era5_unet",
+    "model_type": "unet"
+  }
+}

@@ -179,7 +179,8 @@ subseasonal:
         checkpoint_step: 100000
         sampler: heun
         sampler_steps: 20
-        guidance_scale: 3
+        # cfg 2 from init 2026-10-21 (cfg 3 before); runs ingested earlier keep 3 in their manifest.
+        guidance_scale: 2
     aurora_imerg_bilinear:
       model_label: Aurora-IMERG · Bilinear
       source_label: Aurora (IMERG head) · bilinear interpolation

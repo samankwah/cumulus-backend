@@ -277,6 +277,13 @@ def test_parse_model_path_reads_model_checkpoint_and_sampler():
     assert found["checkpoint"] == "ckpt-diffusion-722-precip-fs64-lr1e-4-100k-100000"
     assert found["checkpoint_step"] == 100000
     assert (found["sampler"], found["sampler_steps"], found["guidance_scale"], found["ensemble_size"]) == ("heun", 20, 3, 10)
+    # The live layout puts the run date above the model folders; cfg 2 from init 2026-10-21.
+    live = parse_model_path(
+        "live_forecasts/downscaled_models/ifs/east_africa-ghana-kenya-senegal-west_africa/2026-10-15/"
+        "model_diffusion_unet_precip_input_output_residual_shiftedlog_calibrated_silu_selfcond_precip24h_only/"
+        "ckpt-diffusion-722-precip-fs64-lr1e-4-100k-100000_heun_n20_cfg2_ens10"
+    )
+    assert (live["sampler"], live["sampler_steps"], live["guidance_scale"], live["ensemble_size"]) == ("heun", 20, 2, 10)
     assert parse_model_path("Unet/") == {}
     assert parse_model_path(r"C:\data\model_det_unet\Unet")["model_type"] == "det_unet"
 

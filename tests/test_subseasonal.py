@@ -72,6 +72,9 @@ def _make_run(root: Path, days: int = 14, *, init: pd.Timestamp = INIT, skip: se
 @pytest.fixture()
 def settings(monkeypatch, tmp_path):
     monkeypatch.setenv("CUMULUS_SUBSEASONAL__ARTIFACT_DIR", str(tmp_path / "artifacts"))
+    monkeypatch.setenv("CUMULUS_SUBSEASONAL__ARCHIVE_DIR", str(tmp_path / "archive"))
+    # Building per-area summaries adds seconds to every ingest; the partner API tests turn it back on.
+    monkeypatch.setenv("CUMULUS_SUBSEASONAL__ARCHIVE_SUMMARIES", "false")
     monkeypatch.setenv("CUMULUS_SUBSEASONAL__RAW_CACHE_DIR", str(tmp_path / "raw-cache"))
     # The tests were written against IFS-UNet as the default model; the shipped default is checked
     # separately (test_shipped_default_model_is_aurora_imerg_unet).

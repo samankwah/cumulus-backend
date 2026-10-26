@@ -2,8 +2,10 @@ name: Ingest 46-day runs
 
 # For every model in the viewer's model picker, pulls the newest complete run from Azure Blob
 # Storage, converts it into the compact Ghana artifact under data/artifacts/subseasonal/<model>/
-# and commits the lot in one commit, which redeploys the API. A run already ingested from the
-# same files changes nothing, so the job only commits (and redeploys) when something is new.
+# and commits the lot in one commit, which redeploys the API. Each run's per-area summary for the
+# open /v1 API is archived alongside, under data/archive/subseasonal/<model>/ (never pruned). A run
+# already ingested from the same files changes nothing, so the job only commits (and redeploys)
+# when something is new.
 #
 # The models, their folders and their secrets all come from `subseasonal.models` in
 # configs/base.yaml: each model names the repository secret holding its container SAS URL
@@ -111,7 +113,7 @@ jobs:
             fi
             echo "::endgroup::"
           done
-          if [ -n "$(git status --porcelain data/artifacts/subseasonal)" ]; then
+          if [ -n "$(git status --porcelain data/artifacts/subseasonal data/archive/subseasonal)" ]; then
             echo "changed=true" >> "$GITHUB_OUTPUT"
           else
             echo "No new run."
@@ -130,7 +132,7 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add -A data/artifacts/subseasonal
+          git add -A data/artifacts/subseasonal data/archive/subseasonal
           runs=$(python - <<'PY'
           import json, pathlib
           root = pathlib.Path("data/artifacts/subseasonal")

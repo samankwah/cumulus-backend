@@ -32,6 +32,8 @@ DEFAULT_NATIONWIDE_ARTIFACT_DIR = BACKEND_ROOT / "data" / "artifacts" / "nationw
 DEFAULT_SEASONAL_MAP_ARTIFACT_DIR = BACKEND_ROOT / "data" / "artifacts" / "seasonal_map"
 DEFAULT_FORECAST_PRODUCT_ARTIFACT_DIR = BACKEND_ROOT / "data" / "artifacts" / "forecast_products"
 DEFAULT_SUBSEASONAL_ARTIFACT_DIR = BACKEND_ROOT / "data" / "artifacts" / "subseasonal"
+# Per-run summaries for the partner API, kept forever (run artifacts are pruned).
+DEFAULT_SUBSEASONAL_ARCHIVE_DIR = BACKEND_ROOT / "data" / "archive" / "subseasonal"
 DEFAULT_OBSERVED_ARTIFACT_DIR = BACKEND_ROOT / "data" / "artifacts" / "observed" / "imerg"
 DEFAULT_BACKEND_DISTRICT_GEOJSON_PATH = BACKEND_ROOT / "data" / "ghana_district_polygons_simplified.geojson"
 DEFAULT_DISTRICT_GEOJSON_PATH = DEFAULT_BACKEND_DISTRICT_GEOJSON_PATH
@@ -379,6 +381,9 @@ class ObservedRainConfig(BaseModel):
 
 class SubseasonalConfig(BaseModel):
     artifact_dir: Path = DEFAULT_SUBSEASONAL_ARTIFACT_DIR
+    archive_dir: Path = DEFAULT_SUBSEASONAL_ARCHIVE_DIR
+    # Write each ingested run's per-area summary to archive_dir (off only to speed up tests).
+    archive_summaries: bool = True
     source_id: str = "ifs_unet"
     source_label: str = "ECMWF IFS · UNet downscaled"
     model_label: str = "IFS-UNet"
@@ -411,6 +416,11 @@ class SubseasonalConfig(BaseModel):
     # listed as unavailable.
     models: dict[str, SubseasonalModelConfig] = Field(default_factory=dict)
     observed: ObservedRainConfig = Field(default_factory=ObservedRainConfig)
+    # The model GMet treats as official for partners and bulletins. GMet sets it in the admin;
+    # the backend reads it from ``official_model_url`` (the frontend's public setting) and falls back
+    # to ``official_model``, then to ``source_id``.
+    official_model: str | None = None
+    official_model_url: str | None = None
 
 
 class ModelParamsConfig(BaseModel):
@@ -425,6 +435,34 @@ class ModelConfig(BaseModel):
     target_column: str = "rainfall_mm"
     estimator: str = "random_forest"
     params: ModelParamsConfig = Field(default_factory=ModelParamsConfig)
+
+
+class PartnerConfig(BaseModel):
+    """A GMet stakeholder (NADMO, VRA, MoFA, an insurer...) with an optional key for the open /v1 API.
+
+    The API needs no key; a partner's key only names its calls in the logs (and, later, its webhook).
+    """
+
+    name: str
+    # SHA-256 (hex) of the partner's API key; the key itself is never stored.
+    key_sha256: str
+    # Where to POST a signed "run.published" event when a new run goes live (optional).
+    webhook_url: str | None = None
+    # A revoked key keeps its record (for the logs) but is refused; calls without a key still work.
+    revoked: bool = False
+
+
+class OpenApiConfig(BaseModel):
+    """Limits on the free /v1 API, per minute (0 switches a limit off).
+
+    Counted per server instance, so they stop one caller hammering the API rather than enforcing an
+    exact quota; responses the CDN serves from its cache are not counted at all.
+    """
+
+    # Callers without a key, counted by IP address.
+    rate_limit_per_minute: int = Field(default=120, ge=0)
+    # Partners sending their key, counted by partner.
+    partner_rate_limit_per_minute: int = Field(default=600, ge=0)
 
 
 class Settings(BaseSettings):
@@ -449,6 +487,10 @@ class Settings(BaseSettings):
     # key set they are hidden (404) unless allow_unauthenticated_admin is on (local dev, tests).
     admin_api_key: str | None = None
     allow_unauthenticated_admin: bool = False
+    # Partner API keys by partner id, e.g. CUMULUS_PARTNERS='{"nadmo": {"name": "NADMO", "key_sha256": "..."}}'.
+    # Issue one with `python -m cumulus.partners new <id> "<name>"`.
+    partners: dict[str, PartnerConfig] = Field(default_factory=dict)
+    open_api: OpenApiConfig = Field(default_factory=OpenApiConfig)
     # The retired random-forest/ERA5 stack (/predict, /advisory, POST /forecast, /forecast/raster,
     # /train, /nationwide, /seasonal-map). Its inputs are not deployed, so it is off by default.
     enable_legacy_endpoints: bool = False

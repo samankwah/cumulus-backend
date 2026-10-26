@@ -6,6 +6,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 
+from cumulus.api.cors import OpenApiCORSMiddleware
 from cumulus.api.errors import install_exception_handlers
 from cumulus.api.routes_advisory import router as advisory_router
 from cumulus.api.routes_farmer_advisory import router as farmer_advisory_router
@@ -14,6 +15,7 @@ from cumulus.api.routes_health import router as health_router
 from cumulus.api.routes_nationwide import router as nationwide_router
 from cumulus.api.routes_seasonal_map import router as seasonal_map_router
 from cumulus.api.routes_subseasonal import router as subseasonal_router
+from cumulus.api.routes_partner import app as partner_app
 from cumulus.api.routes_training import router as training_router
 from cumulus.logging import configure_logging
 from cumulus.settings import DEFAULT_CORS_ALLOWED_ORIGIN_REGEX, get_settings
@@ -30,6 +32,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 app.add_middleware(GZipMiddleware, minimum_size=1024)
+# Outermost (added last): the open API (/v1) may be called from any web page; everything else keeps
+# the site's own origins above.
+app.add_middleware(OpenApiCORSMiddleware, prefix="/v1")
 install_exception_handlers(app)
 app.include_router(health_router)
 app.include_router(training_router)
@@ -37,5 +42,7 @@ app.include_router(forecast_router)
 app.include_router(nationwide_router)
 app.include_router(seasonal_map_router)
 app.include_router(subseasonal_router)
+# The open API has its own docs at /v1/docs.
+app.mount("/v1", partner_app)
 app.include_router(advisory_router)
 app.include_router(farmer_advisory_router)

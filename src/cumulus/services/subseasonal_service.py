@@ -627,7 +627,8 @@ def run_summary(settings: Settings, run: _SummaryView, *, active: bool) -> dict[
         "synthetic": bool(manifest.get("synthetic")),
         "init_time": run.init_time,
         "ingested_at": manifest.get("ingested_at"),
-        "provenance": manifest.get("provenance") or {},
+        # Where the files sat on the modelling team's machines stays internal.
+        "provenance": {key: value for key, value in (manifest.get("provenance") or {}).items() if key != "source_path"},
         "lead_days": run.day_count,
         "expected_lead_days": expected,
         "missing_lead_days": list(range(run.day_count + 1, expected + 1)),

@@ -167,6 +167,8 @@ def ingest_run(
     # The first real run of a model retires any synthetic demo runs kept for it. Done before
     # promoting, so a real run older than the demo still becomes the active one.
     removed: tuple[str, ...] = drop_synthetic_runs(settings, keep=run_id)
+    # Archived before pruning, so even a run that is too old to keep leaves its summary.
+    _archive_summary(settings, run_id)
     promoted = False
     if promote:
         promoted = promote_run(settings, run_id)
@@ -187,6 +189,17 @@ def ingest_run(
         promoted=promoted,
         removed_runs=removed,
     )
+
+
+def _archive_summary(settings: Settings, run_id: str, *, only_if_missing: bool = False) -> None:
+    """Write the run's per-area summary for the partner API (kept forever, unlike the run)."""
+    from cumulus.subseasonal import summary
+
+    if not settings.subseasonal.archive_summaries:
+        return
+    if only_if_missing and summary.summary_path(settings, run_id).exists():
+        return
+    summary.write_summary(settings, run_id)
 
 
 def _select_run(
@@ -241,6 +254,7 @@ def _existing_result(settings: Settings, run_id: str, *, promote: bool) -> Inges
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     promoted = promote_run(settings, run_id) if promote else False
     removed = prune_runs(settings) if promoted else ()
+    _archive_summary(settings, run_id, only_if_missing=True)
     return IngestResult(
         run_id=run_id,
         init_time=datetime.fromisoformat(manifest["init_time"]),

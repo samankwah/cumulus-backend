@@ -27,9 +27,11 @@ from cumulus.settings import get_settings
 router = APIRouter(prefix="/subseasonal", tags=["subseasonal"])
 
 # Tiles are addressed by run_id, so a given URL never changes content: let browsers and the CDN
-# keep them, which makes timeline playback instant after the first pass.
-IMMUTABLE_CACHE = "public, max-age=31536000, immutable"
-SHORT_CACHE = "public, max-age=300"
+# keep them, which makes timeline playback instant after the first pass. Vercel's CDN only stores a
+# function response that carries s-maxage; max-age alone is kept by the browser only.
+IMMUTABLE_CACHE = "public, max-age=31536000, s-maxage=31536000, immutable"
+SHORT_CACHE = "public, max-age=300, s-maxage=300"
+LISTING_CACHE = "public, max-age=60, s-maxage=60"
 
 # Shared query parameters: which model, and (ensemble rainfall) which statistic of its members.
 MODEL_QUERY = Query(default=None, description="Model id from /subseasonal/models; default: the configured model.")
@@ -42,13 +44,13 @@ WET_SPELL_DAYS_QUERY = Query(default=None, ge=1, description="Series: the wet sp
 
 @router.get("/models", response_model=SubseasonalModelsResponse)
 def subseasonal_models_endpoint(response: Response) -> SubseasonalModelsResponse:
-    response.headers["Cache-Control"] = "public, max-age=60"
+    response.headers["Cache-Control"] = LISTING_CACHE
     return SubseasonalModelsResponse(**list_models(get_settings()))
 
 
 @router.get("/runs", response_model=SubseasonalRunsResponse)
 def subseasonal_runs_endpoint(response: Response, model: str | None = MODEL_QUERY) -> SubseasonalRunsResponse:
-    response.headers["Cache-Control"] = "public, max-age=60"
+    response.headers["Cache-Control"] = LISTING_CACHE
     return SubseasonalRunsResponse(**list_runs(model_settings(get_settings(), model)))
 
 

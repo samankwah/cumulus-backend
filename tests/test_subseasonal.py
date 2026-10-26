@@ -423,7 +423,11 @@ def test_layer_and_tile_endpoints(client):
     tile = client.get(tile_url)
     assert tile.status_code == 200 and tile.content.startswith(b"\x89PNG")
     assert "immutable" in tile.headers["cache-control"]
-    ocean = client.get(layer["tile_url"].replace("{z}", "7").replace("{x}", "10").replace("{y}", "10"))
+    # s-maxage is what lets Vercel's CDN keep the tile; an error must never be kept.
+    assert "s-maxage=31536000" in tile.headers["cache-control"]
+    missing = client.get(tile_url.replace("ifs_unet_2026092500", "ifs_unet_1999010100"))
+    assert missing.status_code == 404 and "s-maxage" not in missing.headers.get("cache-control", "")
+    ocean =client.get(layer["tile_url"].replace("{z}", "7").replace("{x}", "10").replace("{y}", "10"))
     assert ocean.status_code == 200 and len(ocean.content) < len(tile.content)
 
 

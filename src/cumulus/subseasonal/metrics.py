@@ -67,21 +67,16 @@ def window_sums(values: np.ndarray, windows: list[Window]) -> np.ndarray:
 def run_lengths(condition: np.ndarray) -> np.ndarray:
     """Length of the run of consecutive True values each day belongs to (0 where False).
 
-    Works along axis 0 for any trailing shape, in O(days) vectorised passes.
+    Works along axis 0 for any trailing shape, with whole-array passes rather than a loop over days.
     """
     condition = np.asarray(condition, dtype=bool)
     days = condition.shape[0]
-    forward = np.zeros(condition.shape, dtype=np.int32)
-    backward = np.zeros(condition.shape, dtype=np.int32)
-    running = np.zeros(condition.shape[1:], dtype=np.int32)
-    for day in range(days):
-        running = np.where(condition[day], running + 1, 0)
-        forward[day] = running
-    running = np.zeros(condition.shape[1:], dtype=np.int32)
-    for day in range(days - 1, -1, -1):
-        running = np.where(condition[day], running + 1, 0)
-        backward[day] = running
-    return np.where(condition, forward + backward - 1, 0)
+    index = np.arange(days, dtype=np.int32).reshape((days,) + (1,) * (condition.ndim - 1))
+    # Each day's nearest False day at or before it (-1 if none) and at or after it (days if none):
+    # a run of True lies strictly between the two.
+    last_false = np.maximum.accumulate(np.where(condition, np.int32(-1), index), axis=0)
+    next_false = np.minimum.accumulate(np.where(condition, np.int32(days), index)[::-1], axis=0)[::-1]
+    return np.where(condition, next_false - last_false - 1, np.int32(0))
 
 
 def spell_day_mask(condition: np.ndarray, min_days: int, prefix: np.ndarray | None = None) -> np.ndarray:

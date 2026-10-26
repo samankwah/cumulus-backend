@@ -348,23 +348,11 @@ def _load_run_cached(
         run.member_weekly = metrics.window_sums(by_day, run.windows).astype(np.float32)
         run.member_total = np.nansum(members, axis=1).astype(np.float32)
         run.median = {
-            "daily": np.nanmedian(members, axis=0).astype(np.float32),
-            "weekly": np.nanmedian(run.member_weekly, axis=1).astype(np.float32),
-            "total": np.nanmedian(run.member_total, axis=0).astype(np.float32),
+            "daily": _nanmedian(members, axis=0).astype(np.float32),
+            "weekly": _nanmedian(run.member_weekly, axis=1).astype(np.float32),
+            "total": _nanmedian(run.member_total, axis=0).astype(np.float32),
         }
-    # Counts are found in each member and then averaged: spells in the mean of the members would
-    # be smoothed away, since averaging rarely leaves 5 days in a row under 1 mm.
-    run.outlook = {
-        key: np.nanmean(value, axis=0).astype(np.float32)
-        for key, value in metrics.outlook_metrics(
-            by_day,
-            wet_threshold_mm=wet_threshold_mm,
-            dry_spell_min_days=dry_spell_min_days,
-            wet_spell_min_days=wet_spell_min_days,
-            prefix=lookback_by_day,
-        ).items()
-    }
-    run.indicator_daily, run.indicator_weekly = _indicator_fields(
+    run.indicator_daily, run.indicator_weekly, member_counts = _indicator_fields(
         by_day,
         run.windows,
         wet_threshold_mm=wet_threshold_mm,
@@ -373,6 +361,14 @@ def _load_run_cached(
         extreme_rain_mm=extreme_rain_mm,
         lookback=lookback_by_day,
     )
+    # Counts are found in each member and then averaged: spells in the mean of the members would
+    # be smoothed away, since averaging rarely leaves 5 days in a row under 1 mm. They reuse the
+    # indicator flags, the same as metrics.outlook_metrics would find again.
+    all_missing = np.all(np.isnan(by_day), axis=0)
+    run.outlook = {
+        key: np.nanmean(value, axis=0).astype(np.float32)
+        for key, value in {"total": np.where(all_missing, np.nan, np.nansum(by_day, axis=0)), **member_counts}.items()
+    }
     run.outlook["extreme_rain"] = _any_exceed_percent(by_day, extreme_rain_mm)
     run.onset = _ensemble_onset(run, by_day)
     run.outlook["onset"] = run.onset.day.astype(np.float32)
@@ -391,6 +387,16 @@ def _load_run_cached(
         )
         run.area_onset[level] = _ensemble_onset(run, area_daily).day
     return run
+
+
+def _nanmedian(values: np.ndarray, axis: int) -> np.ndarray:
+    """``np.nanmedian`` along ``axis``, without its slow masked-array path for a short axis (members)."""
+    ordered = np.sort(values, axis=axis)  # NaN sorts last
+    count = np.sum(~np.isnan(values), axis=axis, keepdims=True)
+    low = np.take_along_axis(ordered, np.maximum((count - 1) // 2, 0), axis=axis)
+    high = np.take_along_axis(ordered, count // 2, axis=axis)
+    median = np.squeeze((low + high) / 2, axis=axis)
+    return np.where(np.squeeze(count, axis=axis) == 0, np.nan, median)
 
 
 def _split_members(dataset: xr.Dataset) -> tuple[np.ndarray | None, np.ndarray]:
@@ -461,14 +467,15 @@ def _indicator_fields(
     wet_spell_min_days: int,
     extreme_rain_mm: float,
     lookback: np.ndarray | None = None,
-) -> tuple[dict[str, np.ndarray], dict[str, np.ndarray]]:
+) -> tuple[dict[str, np.ndarray], dict[str, np.ndarray], dict[str, np.ndarray]]:
     """Daily shares and weekly counts per indicator, from rain shaped (day, member, lat, lon).
 
     Each member gives a 100/0 flag per day and the daily field is their mean: the % of members
     (just 100/0 for a single run). Spells are found over each member's full run, so a week's
     dry-spell days are the days of that week inside a spell, and the weekly counts (averaged over
     members) add up to the outlook total. Extreme rain per week is instead the % of members with
-    at least one day over the threshold in that week.
+    at least one day over the threshold in that week. The third result is each member's count of
+    rain days and spell days over the whole run, shaped (member, lat, lon), for the outlook.
     """
     wet = metrics.wet_mask(by_day, wet_threshold_mm)
     dry = metrics.dry_mask(by_day, wet_threshold_mm)
@@ -481,8 +488,13 @@ def _indicator_fields(
         "extreme_rain": metrics.wet_mask(by_day, extreme_rain_mm),
     }
     missing = np.isnan(by_day)
+    all_missing = np.all(missing, axis=0)
     per_day: dict[str, np.ndarray] = {}
     per_week: dict[str, np.ndarray] = {}
+    per_run = {
+        key: np.where(all_missing, np.nan, flags[key].sum(axis=0).astype(float))
+        for key in ("rainy_days", "dry_spell_days", "wet_spell_days")
+    }
     for key, flag in flags.items():
         counts = np.where(missing, np.nan, flag.astype(np.float32))
         per_day[key] = (np.nanmean(counts, axis=1) * 100).astype(np.float32)
@@ -490,7 +502,7 @@ def _indicator_fields(
         if key == "extreme_rain":
             weekly = np.where(np.isnan(weekly), np.nan, (weekly > 0) * 100.0)
         per_week[key] = np.nanmean(weekly, axis=1).astype(np.float32)
-    return per_day, per_week
+    return per_day, per_week, per_run
 
 
 # --------------------------------------------------------------------------- run summaries

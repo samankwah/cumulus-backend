@@ -22,6 +22,8 @@ GMet's 46-day rainfall forecast for partners, by region and district of Ghana.
 * **Partners** may send a key from GMet in `X-API-Key` so their use is counted as theirs; it gives the same data.
 * **Fair use:** up to 120 calls a minute per address (600 with a partner key); past that you get `429`
   with `Retry-After`. Cached answers do not count, so poll `/v1/runs/latest` with `If-None-Match`.
+* **New runs:** partners can ask GMet for a webhook: a `run.published` event is POSTed when each run
+  goes live, signed with HMAC-SHA256 of `"<X-Cumulus-Timestamp>.<body>"` in `X-Cumulus-Signature`.
 * **Terms:** credit "Delivered by GMet · forecast models by the Cumulus team" and keep the disclaimer in each response.
 * **Runs:** by default every route answers from the newest run of the model GMet marks as official;
   pass `model=` for another model and `run=` for an earlier run (archived runs keep their summary).

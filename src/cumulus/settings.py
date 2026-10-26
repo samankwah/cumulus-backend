@@ -440,14 +440,16 @@ class ModelConfig(BaseModel):
 class PartnerConfig(BaseModel):
     """A GMet stakeholder (NADMO, VRA, MoFA, an insurer...) with an optional key for the open /v1 API.
 
-    The API needs no key; a partner's key only names its calls in the logs (and, later, its webhook).
+    The API needs no key; a partner's key only names its calls in the logs; a webhook tells it about new runs.
     """
 
     name: str
     # SHA-256 (hex) of the partner's API key; the key itself is never stored.
     key_sha256: str
-    # Where to POST a signed "run.published" event when a new run goes live (optional).
+    # Where to POST a signed "run.published" event when a new run goes live (optional), and the
+    # shared secret it is signed with (see cumulus.announce for how partners check it).
     webhook_url: str | None = None
+    webhook_secret: str | None = None
     # A revoked key keeps its record (for the logs) but is refused; calls without a key still work.
     revoked: bool = False
 

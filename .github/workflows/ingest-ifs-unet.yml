@@ -2,8 +2,12 @@ name: Ingest 46-day runs
 
 # For every model in the viewer's model picker, pulls the newest complete run from Azure Blob
 # Storage, converts it into the compact Ghana artifact under data/artifacts/subseasonal/<model>/
-# and commits the lot in one commit, which redeploys the API. A run already ingested from the
-# same files changes nothing, so the job only commits (and redeploys) when something is new.
+# and commits the lot in one commit, which redeploys the API. Each run's per-area summary for the
+# open /v1 API is archived alongside, under data/archive/subseasonal/<model>/ (never pruned). A run
+# already ingested from the same files changes nothing, so the job only commits (and redeploys)
+# when something is new. Once the redeploy serves the new runs, partners with a webhook in the
+# PARTNERS_JSON secret (the deployment's CUMULUS_PARTNERS value) are sent a signed "run.published"
+# event for each (see src/cumulus/announce.py).
 #
 # The models, their folders and their secrets all come from `subseasonal.models` in
 # configs/base.yaml: each model names the repository secret holding its container SAS URL
@@ -111,7 +115,7 @@ jobs:
             fi
             echo "::endgroup::"
           done
-          if [ -n "$(git status --porcelain data/artifacts/subseasonal)" ]; then
+          if [ -n "$(git status --porcelain data/artifacts/subseasonal data/archive/subseasonal)" ]; then
             echo "changed=true" >> "$GITHUB_OUTPUT"
           else
             echo "No new run."
@@ -126,11 +130,15 @@ jobs:
           python -m pytest -q tests/test_subseasonal.py
 
       - name: Commit artifacts
+        id: commit
         if: steps.ingest.outputs.changed == 'true'
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add -A data/artifacts/subseasonal
+          git add -A data/artifacts/subseasonal data/archive/subseasonal
+          # Models whose active run changed, i.e. the runs to announce once they are live.
+          promoted=$(git diff --cached --name-only -- 'data/artifacts/subseasonal/*/active.json' | cut -d/ -f4 | xargs)
+          echo "promoted=${promoted}" >> "$GITHUB_OUTPUT"
           runs=$(python - <<'PY'
           import json, pathlib
           root = pathlib.Path("data/artifacts/subseasonal")
@@ -143,6 +151,18 @@ jobs:
           git commit -m "Ingest 46-day runs: ${runs}"
           git pull --rebase origin "${GITHUB_REF_NAME}"
           git push
+
+      - name: Announce new runs
+        if: steps.commit.outputs.promoted != ''
+        env:
+          PARTNERS_JSON: ${{ secrets.PARTNERS_JSON }}
+          PROMOTED: ${{ steps.commit.outputs.promoted }}
+        run: |
+          # Without the secret there are no webhooks, but the step still checks the runs went live.
+          export CUMULUS_PARTNERS="${PARTNERS_JSON:-"{}"}"
+          args=()
+          for model in $PROMOTED; do args+=(--model "$model"); done
+          python -m cumulus.announce "${args[@]}"
 
       # Models that failed are reported after any good runs were committed.
       - name: Fail if a model failed

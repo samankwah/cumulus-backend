@@ -326,6 +326,19 @@ class SubseasonalBoundsConfig(BaseModel):
     longitude_max: float = 2.0
 
 
+class LiveModelConfig(BaseModel):
+    """Where one model sits in upstream's live layout (``subseasonal.live_root``)::
+
+        <live_root><src>/<live_region>/YYYY-MM-DD/<model_dir>/[<ckpt_prefix>*/]<variable>/precip_24h/data/
+    """
+
+    src: str
+    model_dir: str
+    variable: str
+    # Checkpoint folder prefix (e.g. "ckpt-diffusion-717-"); leave out for models without one (bilinear).
+    ckpt_prefix: str | None = None
+
+
 class SubseasonalModelConfig(BaseModel):
     """One forecast model the viewer can show; its runs live under ``<artifact_dir>/<model id>/``.
 
@@ -348,6 +361,10 @@ class SubseasonalModelConfig(BaseModel):
     # Name of the CI secret holding this model's container SAS URL (used by the ingest workflow).
     sas_secret: str | None = None
     local_source_dir: Path | None = None
+    # Read from upstream's live layout instead of ``azure_prefix``.
+    live: LiveModelConfig | None = None
+    # Runs to keep for this model (default: ``subseasonal.retention_runs``); ensembles are big.
+    retention_runs: int | None = None
     description: str | None = None
     # Known facts about the downscaling model (checkpoint, sampler...) for runs whose file paths
     # don't encode them; merged under whatever the path itself reveals.
@@ -411,6 +428,11 @@ class SubseasonalConfig(BaseModel):
     local_source_dir: Path | None = None
     azure_sas_url: str | None = None
     azure_prefix: str = "Unet/"
+    # Upstream's live layout: <live_root><src>/<live_region>/<date>/... (see LiveModelConfig).
+    live_root: str = "live_forecasts/downscaled_models/"
+    live_region: str = "east_africa-ghana-kenya-senegal-west_africa"
+    # The model being ingested or served when it reads the live layout (set by ``for_model``).
+    live: LiveModelConfig | None = None
     # Models offered in the viewer's model picker, by id. ``source_id`` is the default model (what
     # the API serves and ingest writes when no model is named); a model without an ingested run is
     # listed as unavailable.

@@ -49,7 +49,8 @@ jobs:
       - name: Ingest
         id: ingest
         env:
-          IMERG_SAS_URL: ${{ secrets.IMERG_SAS_URL }}
+          # Same container as the forecasts, so the forecasts' SAS works too.
+          IMERG_SAS_URL: ${{ secrets.IMERG_SAS_URL || secrets.ITALYNORTH_SAS_URL }}
           FORCE: ${{ github.event.inputs.force }}
         run: |
           if [ -z "$IMERG_SAS_URL" ]; then

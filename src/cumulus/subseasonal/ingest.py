@@ -37,6 +37,9 @@ from cumulus.settings import Settings, get_settings
 from cumulus.subseasonal import geomask
 from cumulus.subseasonal.sources import (
     AzureBlobSasSource,
+    LiveAzureSource,
+    LiveLayout,
+    LiveLocalSource,
     LeadFile,
     MEMBER_DIR_PATTERN,
     LocalFolderSource,
@@ -96,7 +99,16 @@ def for_model(settings: Settings, model: str | None) -> Settings:
         update["azure_sas_url"] = spec.azure_sas_url
     if spec.local_source_dir:
         update["local_source_dir"] = spec.local_source_dir
+    if spec.live:
+        update["live"] = spec.live
+    if spec.retention_runs:
+        update["retention_runs"] = spec.retention_runs
     return settings.model_copy(update={"subseasonal": config.model_copy(update=update)})
+
+
+def raw_cache_dir(settings: Settings) -> Path:
+    """Where a model's downloaded raw files go (a local source is read in place)."""
+    return Path(settings.subseasonal.raw_cache_dir or Path(settings.raw_data_dir) / settings.subseasonal.source_id)
 
 
 def source_dir(settings: Settings) -> Path:
@@ -107,14 +119,24 @@ def build_source(settings: Settings, kind: str, path: Path | None) -> RunSource:
     config = settings.subseasonal
     if kind == "auto":
         kind = "azure" if config.azure_sas_url else "local"
+    live = config.live
+    layout = (
+        LiveLayout(model_dir=live.model_dir, variable=live.variable, ckpt_prefix=live.ckpt_prefix) if live else None
+    )
     if kind == "azure":
         sas_url = config.azure_sas_url or os.environ.get("IFS_UNET_SAS_URL")
         if not sas_url:
             raise SourceError("Set CUMULUS_SUBSEASONAL__AZURE_SAS_URL (container SAS URL with Read + List).")
+        if live and layout:
+            prefix = f"{config.live_root.rstrip('/')}/{live.src}/{config.live_region}/"
+            return LiveAzureSource(sas_url, prefix, layout)
         return AzureBlobSasSource(sas_url, prefix=config.azure_prefix)
     root = path or config.local_source_dir
     if root is None:
         raise SourceError("Pass --path or set CUMULUS_SUBSEASONAL__LOCAL_SOURCE_DIR for a local ingest.")
+    if layout:
+        # A local copy of the live layout: --path points at <src>/<region>/ (the date folders).
+        return LiveLocalSource(Path(root), layout)
     return LocalFolderSource(Path(root))
 
 
@@ -146,8 +168,7 @@ def ingest_run(
         if existing is not None:
             return _existing_result(settings, existing, promote=promote)
 
-    raw_cache = Path(settings.subseasonal.raw_cache_dir or Path(settings.raw_data_dir) / settings.subseasonal.source_id)
-    paths = source.fetch_run(target_date, raw_cache)
+    paths = source.fetch_run(target_date, raw_cache_dir(settings))
     if not paths:
         raise IngestError(f"Run {target_date.isoformat()} has no lead files.")
 
@@ -214,9 +235,21 @@ def _select_run(
     candidates = [init_date] if init_date is not None else list(reversed(runs))
     for candidate in candidates:
         lead_files = source.list_lead_files(candidate)
-        if not require_complete or len(lead_files) >= expected:
+        # Every ensemble member needs every lead, not just the run as a whole.
+        per_member: dict[str | None, int] = {}
+        for item in lead_files:
+            per_member[item.member] = per_member.get(item.member, 0) + 1
+        fewest = min(per_member.values(), default=0)
+        if not require_complete or fewest >= expected:
             return candidate, lead_files
-        print(f"{candidate.isoformat()}: {len(lead_files)}/{expected} lead files, still uploading; skipped.", file=sys.stderr)
+        if not lead_files:
+            print(f"{candidate.isoformat()}: no lead files for this model; skipped.", file=sys.stderr)
+            continue
+        print(
+            f"{candidate.isoformat()}: {fewest}/{expected} lead files"
+            f"{' in the emptiest member' if len(per_member) > 1 else ''}, still uploading; skipped.",
+            file=sys.stderr,
+        )
     if init_date is not None:
         raise IngestError(f"Run {init_date.isoformat()} is incomplete (fewer than {expected} lead files).")
     raise IngestError(f"No complete run (with {expected} lead files) at {source.label} yet.")
@@ -666,6 +699,9 @@ def main(argv: list[str] | None = None) -> int:
         help="Skip runs that do not yet have every lead file (still uploading); with --latest, use the newest complete run.",
     )
     parser.add_argument("--force", action="store_true", help="Rebuild the artifact even if the run was already ingested.")
+    parser.add_argument(
+        "--clean-raw", action="store_true", help="Delete the downloaded raw files afterwards (CI: ensembles are ~530 MB a run)."
+    )
     args = parser.parse_args(argv)
 
     try:
@@ -690,6 +726,9 @@ def main(argv: list[str] | None = None) -> int:
     except (SourceError, IngestError) as exc:
         print(f"ingest failed: {exc}", file=sys.stderr)
         return 1
+    finally:
+        if args.clean_raw and args.source != "local":
+            shutil.rmtree(raw_cache_dir(settings), ignore_errors=True)
     if result.unchanged:
         print(f"{result.run_id}: already ingested from the same files; nothing to do{' [now active]' if result.promoted else ''}.")
         return 0

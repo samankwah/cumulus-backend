@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
+from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 
@@ -19,6 +20,7 @@ from cumulus.api.routes_partner import app as partner_app
 from cumulus.api.routes_training import router as training_router
 from cumulus.logging import configure_logging
 from cumulus.settings import DEFAULT_CORS_ALLOWED_ORIGIN_REGEX, get_settings
+from cumulus.subseasonal import store
 
 settings = get_settings()
 configure_logging(settings.log_level)
@@ -36,6 +38,17 @@ app.add_middleware(GZipMiddleware, minimum_size=1024)
 # the site's own origins above.
 app.add_middleware(OpenApiCORSMiddleware, prefix="/v1")
 install_exception_handlers(app)
+
+
+@app.middleware("http")
+async def refresh_forecast_store(request: Request, call_next):
+    # Ingested runs live in the Blob store when one is configured; mirror any new ones first
+    # (at most once a minute; a no-op without CUMULUS_STORE__URL).
+    if request.url.path.startswith(("/subseasonal", "/v1")):
+        await run_in_threadpool(store.refresh, get_settings())
+    return await call_next(request)
+
+
 app.include_router(health_router)
 app.include_router(training_router)
 app.include_router(forecast_router)

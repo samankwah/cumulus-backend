@@ -18,3 +18,9 @@ data/artifacts/forecast_products/_options_cache.json
 # Raw downscaled sample bundles (about 1.8 GB each): ingest them into data/artifacts/subseasonal
 # with `python -m cumulus.subseasonal.ingest --source local --path ...`; only their README is kept.
 data/cumulus_data_*/**/*.nc
+
+# Ingested forecast runs and partner summaries live in the Vercel Blob store, not git
+# (see src/cumulus/subseasonal/store.py).
+data/artifacts/subseasonal/
+data/archive/subseasonal/
+data/artifacts/observed/

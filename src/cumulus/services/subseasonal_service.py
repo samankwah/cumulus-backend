@@ -28,8 +28,8 @@ from cumulus.api.errors import (
     SubseasonalRunNotAvailableError,
     SubseasonalRunNotFoundError,
 )
-from cumulus.settings import Settings
-from cumulus.subseasonal import geomask, legends, metrics
+from cumulus.settings import Settings, get_settings
+from cumulus.subseasonal import geomask, legends, metrics, store
 from cumulus.subseasonal import observed as observed_rain
 from cumulus.subseasonal.ingest import (
     ACTIVE_FILE_NAME,
@@ -302,7 +302,10 @@ def _load_run_cached(
 ) -> PreparedRun:
     directory = Path(run_dir)
     manifest = json.loads((directory / MANIFEST_FILE_NAME).read_text(encoding="utf-8"))
-    with xr.open_dataset(directory / manifest.get("artifact", "rainfall.nc"), engine="scipy") as dataset:
+    artifact = directory / manifest.get("artifact", "rainfall.nc")
+    # Runs live in the Blob store when one is configured; fetched on first use.
+    store.ensure_file(get_settings(), artifact)
+    with xr.open_dataset(artifact, engine="scipy") as dataset:
         dataset = dataset.load()
     members, daily = _split_members(dataset)
     latitudes = np.asarray(dataset["latitude"].values, dtype=float)
@@ -587,7 +590,10 @@ def _prepared_if_loaded(settings: Settings, run_id: str) -> PreparedRun | None:
 def _national_means_cached(run_dir: str, _manifest_mtime: int, geojson_path: str, mask_cache_dir: str, observed_key: tuple[Any, ...] = ()):
     directory = Path(run_dir)
     manifest = json.loads((directory / MANIFEST_FILE_NAME).read_text(encoding="utf-8"))
-    with xr.open_dataset(directory / manifest.get("artifact", "rainfall.nc"), engine="scipy") as dataset:
+    artifact = directory / manifest.get("artifact", "rainfall.nc")
+    # Runs live in the Blob store when one is configured; fetched on first use.
+    store.ensure_file(get_settings(), artifact)
+    with xr.open_dataset(artifact, engine="scipy") as dataset:
         dataset = dataset.load()
     _, daily = _split_members(dataset)
     latitudes = np.asarray(dataset["latitude"].values, dtype=float)

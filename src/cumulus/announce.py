@@ -1,7 +1,8 @@
 """Tell partners about new runs once they are live: ``python -m cumulus.announce --model ifs_unet ...``.
 
-Run by the ingest workflow after it pushes new runs. For each model it waits until the deployed open
-API serves the run named in that model's local ``active.json`` (the push redeploys Vercel), then
+Run by the ingest workflow after it publishes new runs. For each model it waits until the deployed
+open API serves the run named in that model's local ``active.json`` (the API mirrors the Blob store
+within a minute; see cumulus.subseasonal.store), then
 POSTs a signed ``run.published`` event to every partner in ``CUMULUS_PARTNERS`` with a
 ``webhook_url`` and ``webhook_secret``.
 

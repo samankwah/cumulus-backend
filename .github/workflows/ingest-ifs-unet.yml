@@ -81,8 +81,10 @@ jobs:
       - name: Ingest
         id: ingest
         env:
-          # All repository secrets as JSON (values stay masked in the log); each model picks its own.
-          SECRETS_JSON: ${{ toJSON(secrets) }}
+          # Secrets are passed by name: GitHub holds runs that read every secret (toJSON(secrets))
+          # as "action required", which silently stopped this job from 22 Oct to 18 Nov 2026.
+          # A model naming another secret in configs/base.yaml needs it added here too.
+          ITALYNORTH_SAS_URL: ${{ secrets.ITALYNORTH_SAS_URL }}
           ONLY_MODEL: ${{ github.event.inputs.model }}
           INIT_DATE: ${{ github.event.inputs.init_date }}
           FORCE: ${{ github.event.inputs.force }}
@@ -104,7 +106,7 @@ jobs:
             fi
             sas_url=""
             if [ -n "$secret_name" ]; then
-              sas_url=$(python -c 'import json, os, sys; print(json.loads(os.environ["SECRETS_JSON"]).get(sys.argv[1], ""))' "$secret_name")
+              sas_url="${!secret_name:-}"
             fi
             if [ -z "$sas_url" ]; then
               # Not configured yet: skip quietly instead of failing (and opening an issue) on every run.

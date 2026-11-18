@@ -189,3 +189,28 @@ def test_publish_never_wipes_the_store_from_a_job_that_did_not_pull(blob, monkey
     with pytest.raises(store.StoreError, match="refusing"):
         store.publish(_use(monkeypatch, lone), only=["subseasonal"])
     assert blob.files == before
+
+
+def test_lookups_in_an_ingest_process_never_delete_new_local_runs(blob, monkeypatch, tmp_path):
+    first = tmp_path / "first"
+    _write_run(first, "aurora_imerg_flow", "aurora_imerg_flow_2026111600")
+    store.publish(_use(monkeypatch, first))
+
+    # CI: one step pulls, a later step (a new process) ingests a new run and builds its summary,
+    # which looks up archived summaries and old run files in the store.
+    ci = tmp_path / "ci"
+    settings = _use(monkeypatch, ci)
+    store.pull(settings)
+    store._reset_for_tests()
+    _write_run(ci, "aurora_imerg_flow", "aurora_imerg_flow_2026111700")
+    new_run = ci / "subseasonal" / "aurora_imerg_flow" / "aurora_imerg_flow_2026111700"
+    assert store.listed(settings, ci / "archive" / "aurora_imerg_flow") == ["aurora_imerg_flow_2026111600.summary.json.gz"]
+    old_run = ci / "subseasonal" / "aurora_imerg_flow" / "aurora_imerg_flow_2026111600"
+    assert store.ensure_file(settings, old_run / "rainfall.nc")
+    assert (new_run / "rainfall.nc").exists() and (new_run / "manifest.json").exists()
+
+    # The publish step (another new process) uploads the new run and promotes it.
+    store._reset_for_tests()
+    result = store.publish(settings)
+    assert "subseasonal/aurora_imerg_flow/aurora_imerg_flow_2026111700/rainfall.nc" in result.uploaded
+    assert result.promoted == ["aurora_imerg_flow"]

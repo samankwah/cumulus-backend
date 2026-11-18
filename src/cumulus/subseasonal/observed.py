@@ -123,7 +123,11 @@ def _load_cached(artifact_dir: str, current_version: str) -> ObservedDaily | Non
     directory = Path(artifact_dir)
     try:
         manifest = json.loads((directory / MANIFEST_FILE_NAME).read_text(encoding="utf-8"))
-        with xr.open_dataset(directory / manifest.get("artifact", ARTIFACT_FILE_NAME), engine="scipy") as dataset:
+        artifact = directory / manifest.get("artifact", ARTIFACT_FILE_NAME)
+        from cumulus.subseasonal import store
+
+        store.ensure_file(get_settings(), artifact)
+        with xr.open_dataset(artifact, engine="scipy") as dataset:
             dataset = dataset.load()
     except (OSError, ValueError, json.JSONDecodeError):
         return None

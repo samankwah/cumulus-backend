@@ -34,7 +34,7 @@ import numpy as np
 import xarray as xr
 
 from cumulus.settings import Settings, get_settings
-from cumulus.subseasonal import geomask
+from cumulus.subseasonal import geomask, store
 from cumulus.subseasonal.sources import (
     AzureBlobSasSource,
     LiveAzureSource,
@@ -218,7 +218,7 @@ def _archive_summary(settings: Settings, run_id: str, *, only_if_missing: bool =
 
     if not settings.subseasonal.archive_summaries:
         return
-    if only_if_missing and summary.summary_path(settings, run_id).exists():
+    if only_if_missing and store.ensure_file(settings, summary.summary_path(settings, run_id)):
         return
     summary.write_summary(settings, run_id)
 
@@ -264,7 +264,10 @@ def _unchanged_run(settings: Settings, lead_files: list[LeadFile]) -> str | None
     run_id = run_id_for(settings.subseasonal.source_id, init_time)
     run_dir = source_dir(settings) / run_id
     manifest_path = run_dir / MANIFEST_FILE_NAME
-    if not (manifest_path.exists() and (run_dir / ARTIFACT_FILE_NAME).exists()):
+    if not manifest_path.exists():
+        return None
+    # With the Blob store, CI only pulled the manifest; the run file comes down on demand.
+    if not store.ensure_file(settings, run_dir / ARTIFACT_FILE_NAME):
         return None
     try:
         recorded = json.loads(manifest_path.read_text(encoding="utf-8")).get("source_files") or []

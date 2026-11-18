@@ -445,6 +445,19 @@ class SubseasonalConfig(BaseModel):
     official_model_url: str | None = None
 
 
+class StoreConfig(BaseModel):
+    """The Vercel Blob store holding ingested forecast artifacts (see cumulus.subseasonal.store).
+
+    Unset ``url`` (the default) keeps everything in the local folders, as in development and tests.
+    """
+
+    # Public base URL of the store, e.g. https://<store id>.public.blob.vercel-storage.com
+    url: str | None = None
+    api_url: str = "https://vercel.com/api/blob"
+    # How often the API checks the store for new runs.
+    refresh_seconds: int = 60
+
+
 class ModelParamsConfig(BaseModel):
     n_estimators: int = 300
     max_depth: int | None = 16
@@ -545,6 +558,7 @@ class Settings(BaseSettings):
     seasonal_map: SeasonalMapConfig = Field(default_factory=SeasonalMapConfig)
     forecast_products: ForecastProductConfig = Field(default_factory=ForecastProductConfig)
     subseasonal: SubseasonalConfig = Field(default_factory=SubseasonalConfig)
+    store: StoreConfig = Field(default_factory=StoreConfig)
 
     @field_validator("cors_allowed_origins", mode="before")
     @classmethod

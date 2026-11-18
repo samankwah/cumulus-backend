@@ -1,8 +1,9 @@
 name: Ingest observed rain (IMERG)
 
-# Folds new IMERG late-run daily totals into data/artifacts/observed/imerg/ and commits them,
-# which redeploys the API: a forecast's elapsed days then show what was observed rather than
-# what had been forecast. Nothing new changes nothing, so the job only commits when a day is new.
+# Folds new IMERG late-run daily totals into data/artifacts/observed/imerg/ and publishes them to
+# the Vercel Blob store (BLOB_READ_WRITE_TOKEN secret, see src/cumulus/subseasonal/store.py); the
+# API picks them up within a minute: a forecast's elapsed days then show what was observed rather
+# than what had been forecast. Nothing new changes nothing. Nothing is committed.
 #
 # Upstream downloads the half-hourly late-run files as they appear and preprocesses them into
 # daily 00-24 UTC totals at 0.25 degrees in Azure Blob Storage (account italynorthdata, container
@@ -23,11 +24,11 @@ on:
         default: false
 
 permissions:
-  contents: write
+  contents: read
   issues: write
 
 concurrency:
-  # Shares the forecast ingest's group, so the two never push at the same time.
+  # Shares the forecast ingest's group, so the two never publish at the same time.
   group: ingest-ifs-unet
   cancel-in-progress: false
 
@@ -46,6 +47,19 @@ jobs:
       - name: Install
         run: pip install -e ".[ingest]"
 
+      # Only the observed tree is pulled and published; the forecast runs are left alone.
+      - name: Pull observed rain from the Blob store
+        env:
+          BLOB_READ_WRITE_TOKEN: ${{ secrets.BLOB_READ_WRITE_TOKEN }}
+        run: |
+          if [ -z "$BLOB_READ_WRITE_TOKEN" ]; then
+            echo "::error::Repository secret BLOB_READ_WRITE_TOKEN is not set; observed rain would have nowhere to go."
+            exit 1
+          fi
+          store_id=$(echo "$BLOB_READ_WRITE_TOKEN" | cut -d_ -f4)
+          echo "CUMULUS_STORE__URL=https://${store_id}.public.blob.vercel-storage.com" >> "$GITHUB_ENV"
+          CUMULUS_STORE__URL="https://${store_id}.public.blob.vercel-storage.com" python -m cumulus.subseasonal.store pull
+
       - name: Ingest
         id: ingest
         env:
@@ -62,26 +76,19 @@ jobs:
             args+=(--force)
           fi
           python -m cumulus.subseasonal.observed "${args[@]}"
-          if [ -n "$(git status --porcelain data/artifacts/observed)" ]; then
-            echo "changed=true" >> "$GITHUB_OUTPUT"
-          fi
+          echo "ran=true" >> "$GITHUB_OUTPUT"
 
       - name: Test
-        if: steps.ingest.outputs.changed == 'true'
+        if: steps.ingest.outputs.ran == 'true'
         run: |
           pip install -e ".[dev]"
-          python -m pytest -q tests/test_subseasonal.py
+          python -m pytest -q tests/test_subseasonal.py tests/test_store.py
 
-      - name: Commit artifact
-        if: steps.ingest.outputs.changed == 'true'
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add -A data/artifacts/observed
-          last=$(python -c "import json; print(json.load(open('data/artifacts/observed/imerg/manifest.json'))['last_date'])")
-          git commit -m "Observed rain (IMERG) up to ${last}"
-          git pull --rebase origin "${GITHUB_REF_NAME}"
-          git push
+      - name: Publish to the Blob store
+        if: steps.ingest.outputs.ran == 'true'
+        env:
+          BLOB_READ_WRITE_TOKEN: ${{ secrets.BLOB_READ_WRITE_TOKEN }}
+        run: python -m cumulus.subseasonal.store publish --only observed/imerg
 
       - name: Report failure
         if: failure()

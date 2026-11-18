@@ -24,6 +24,7 @@ from typing import Any
 import unicodedata
 
 from cumulus.settings import Settings, get_settings
+from cumulus.subseasonal import store
 from cumulus.subseasonal.ingest import MANIFEST_FILE_NAME, for_model, list_run_ids, source_dir
 from cumulus.subseasonal.metrics import rain_day
 
@@ -52,9 +53,10 @@ def summary_path(settings: Settings, run_id: str) -> Path:
 
 def archived_run_ids(settings: Settings) -> list[str]:
     root = archive_dir(settings)
-    if not root.is_dir():
-        return []
-    return sorted(path.name[: -len(SUMMARY_SUFFIX)] for path in root.glob(f"*{SUMMARY_SUFFIX}"))
+    names = {path.name for path in root.glob(f"*{SUMMARY_SUFFIX}")} if root.is_dir() else set()
+    # With the Blob store, summaries are fetched only when read; the store lists them all.
+    names.update(name for name in store.listed(settings, root) if name.endswith(SUMMARY_SUFFIX))
+    return sorted(name[: -len(SUMMARY_SUFFIX)] for name in names)
 
 
 def build_summary(settings: Settings, run_id: str) -> dict[str, Any]:
@@ -198,7 +200,7 @@ def write_summary(settings: Settings, run_id: str) -> Path:
 def load_summary(settings: Settings, run_id: str) -> dict[str, Any]:
     """The archived summary, or one built now (and kept in memory) for a run not yet archived."""
     path = summary_path(settings, run_id)
-    if path.exists():
+    if store.ensure_file(settings, path):
         return _read(str(path), path.stat().st_mtime_ns)
     if run_id not in list_run_ids(settings):
         from cumulus.api.errors import SubseasonalRunNotFoundError

@@ -13,10 +13,20 @@ split into ``member_###/`` subfolders, each with its own full set of lead files:
 Two interchangeable sources implement :class:`RunSource`: a local folder (the sample run,
 manual drops) and Azure Blob Storage read through a container SAS URL. The Azure adapter talks
 to the Blob REST API with ``urllib`` so no SDK is needed in the ingest environment.
+
+Upstream's *live* layout puts the run date above the model folders, one tree per S2S source::
+
+    <root>/<src>/<region>/YYYY-MM-DD/<model_dir>/[<ckpt_dir>/]<variable>/precip_24h/data/
+        YYYY-MM-DD-HH-LLLL.nc            (deterministic; the ensemble mean when members exist)
+        member_###/YYYY-MM-DD-HH-LLLL.nc (ensemble members)
+
+:class:`LiveAzureSource` and :class:`LiveLocalSource` read it for one model, picked by its
+model folder, checkpoint prefix and variable (see :class:`LiveLayout`).
 """
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, replace
 from datetime import date
 import os
@@ -80,7 +90,9 @@ def parse_lead_file(name: str, size: int | None = None) -> LeadFile | None:
     )
 
 
-MODEL_DIR_PATTERN = re.compile(r"^model_(?P<type>.+?unet)(?:_|$)")
+MODEL_DIR_PATTERN = re.compile(r"^model_(?P<type>(?:.+?_)?unet)(?:_|$)")
+# Upstream's folder for plain bilinear interpolation (no model, no checkpoint level).
+BILINEAR_DIR_PATTERN = re.compile(r"^bilinear(?:_|$)")
 SAMPLER_NUMBER_PATTERN = re.compile(r"^(?P<key>n|cfg|ens)(?P<value>\d+(?:\.\d+)?)$")
 
 
@@ -95,6 +107,10 @@ def parse_model_path(location: str) -> dict[str, Any]:
     model_dir = next((part for part in segments if part.startswith("model_")), None)
     checkpoint_dir = next((part for part in segments if part.startswith("ckpt")), None)
     found: dict[str, Any] = {}
+    bilinear_dir = next((part for part in segments if BILINEAR_DIR_PATTERN.match(part)), None)
+    if model_dir is None and bilinear_dir:
+        found["model_dir"] = bilinear_dir
+        found["model_type"] = "bilinear interpolation"
     if model_dir:
         found["model_dir"] = model_dir
         match = MODEL_DIR_PATTERN.match(model_dir)
@@ -106,14 +122,18 @@ def parse_model_path(location: str) -> dict[str, Any]:
         step = re.search(r"-(\d+)$", checkpoint)
         if step:
             found["checkpoint_step"] = int(step.group(1))
+        sampler: list[str] = []
         for token in settings:
             number = SAMPLER_NUMBER_PATTERN.match(token)
             if number is None:
-                found.setdefault("sampler", token)
+                # "heun", or "flow_heun" for flow matching.
+                sampler.append(token)
                 continue
             value = float(number.group("value"))
             key = {"n": "sampler_steps", "cfg": "guidance_scale", "ens": "ensemble_size"}[number.group("key")]
             found[key] = int(value) if value.is_integer() else value
+        if sampler:
+            found["sampler"] = "_".join(sampler)
     return found
 
 
@@ -132,10 +152,15 @@ class _LayoutSource:
         raise NotImplementedError
 
     def _lead_files_in(self, folder: str) -> list[LeadFile]:
-        """Lead files in ``folder`` and in any ``member_###`` subfolders of it."""
+        """Lead files in ``folder``, or in its ``member_###`` subfolders when it has them.
+
+        Upstream writes the ensemble mean next to the member folders; it is not a member, so the
+        files in ``folder`` itself are left out whenever members exist.
+        """
         files, folders = self._entries(folder)
-        found = [item for name, size in files if (item := parse_lead_file(name, size)) is not None]
-        for member in sorted(name for name in folders if MEMBER_DIR_PATTERN.match(name)):
+        members = sorted(name for name in folders if MEMBER_DIR_PATTERN.match(name))
+        found = [] if members else [item for name, size in files if (item := parse_lead_file(name, size)) is not None]
+        for member in members:
             member_files, _ = self._entries(_join(folder, member))
             for name, size in member_files:
                 item = parse_lead_file(name, size)
@@ -200,7 +225,9 @@ class LocalFolderSource(_LayoutSource):
 class AzureBlobSasSource(_LayoutSource):
     """Read-only access to a blob container through a SAS URL (needs Read + List permissions)."""
 
-    def __init__(self, sas_url: str, prefix: str = "Unet/", *, timeout: float = 60.0, retries: int = 3):
+    def __init__(
+        self, sas_url: str, prefix: str = "Unet/", *, timeout: float = 60.0, retries: int = 3, workers: int = 8
+    ):
         parts = urlsplit(sas_url.strip())
         if parts.scheme != "https" or not parts.netloc or not parts.query:
             raise SourceError(
@@ -214,6 +241,7 @@ class AzureBlobSasSource(_LayoutSource):
             self.prefix += "/"
         self.timeout = timeout
         self.retries = max(1, retries)
+        self.workers = max(1, workers)
         # Never put the token in labels or logs.
         self.label = f"azure:{self._netloc}{self._container_path}/{self.prefix}"
         self.location = self.prefix
@@ -229,12 +257,16 @@ class AzureBlobSasSource(_LayoutSource):
         folder = self._run_folder(init_date)
         run_dir = Path(destination) / init_date.isoformat()
         paths: list[Path] = []
+        missing: list[tuple[str, Path]] = []
         for item in self.list_lead_files(init_date):
             target = run_dir / item.key
             target.parent.mkdir(parents=True, exist_ok=True)
             if not (target.exists() and item.size is not None and target.stat().st_size == item.size):
-                self._download(f"{self.prefix}{_join(folder, item.key)}", target)
+                missing.append((f"{self.prefix}{_join(folder, item.key)}", target))
             paths.append(target)
+        # An ensemble run is ~460 files; fetch several at once.
+        with ThreadPoolExecutor(max_workers=self.workers) as pool:
+            list(pool.map(lambda job: self._download(*job), missing))
         return paths
 
     def list_blobs(self) -> list[tuple[str, int | None]]:
@@ -293,6 +325,105 @@ class AzureBlobSasSource(_LayoutSource):
     def _download(self, blob_name: str, target: Path) -> None:
         temporary = target.with_suffix(target.suffix + ".part")
         url = self._url(f"{self._container_path}/{quote(blob_name)}")
-        with self._open(url) as response, temporary.open("wb") as handle:
-            shutil.copyfileobj(response, handle, length=1 << 20)
+        # The body can stall mid-read too (seen on the live container), not just the connect.
+        for attempt in range(self.retries):
+            try:
+                with self._open(url) as response, temporary.open("wb") as handle:
+                    shutil.copyfileobj(response, handle, length=1 << 20)
+                break
+            except (TimeoutError, ConnectionError, OSError) as exc:
+                if attempt + 1 >= self.retries:
+                    raise SourceError(f"Download of {blob_name} failed after {attempt + 1} attempts: {exc}") from exc
+                time.sleep(min(2**attempt, 8))
         os.replace(temporary, target)
+
+
+@dataclass(frozen=True)
+class LiveLayout:
+    """Which model folder of upstream's live layout a source reads (see the module docstring)."""
+
+    model_dir: str
+    variable: str
+    # Checkpoint folder prefix, e.g. "ckpt-diffusion-717-"; None when the model has no checkpoint
+    # level (bilinear). A prefix, so a sampler change (n30 -> n40) still matches.
+    ckpt_prefix: str | None = None
+    data_subpath: str = "precip_24h/data"
+
+
+def _checkpoint_rank(name: str) -> tuple[int, str]:
+    step = re.search(r"-(\d+)(?:_|$)", name)
+    return (int(step.group(1)) if step else -1, name)
+
+
+class _LiveLayoutMixin:
+    """Run discovery for the live layout: date folders at the root, the model's data folder below.
+
+    Every date folder counts as a run; a date without this model's folder simply has no lead
+    files, which ``--require-complete`` skips.
+    """
+
+    layout: LiveLayout
+    label: str
+    location: str
+    _base_location: str
+    _resolved: dict[date, str | None]
+
+    def _init_layout(self, layout: LiveLayout) -> None:
+        self.layout = layout
+        self._resolved = {}
+
+    def _run_folders(self) -> dict[date, str]:
+        _, folders = self._entries("")  # type: ignore[attr-defined]
+        return {date.fromisoformat(name): name for name in folders if RUN_DIR_PATTERN.match(name)}
+
+    def list_runs(self) -> list[date]:
+        return sorted(self._run_folders())
+
+    def _resolve(self, init_date: date) -> str | None:
+        if init_date in self._resolved:
+            return self._resolved[init_date]
+        layout = self.layout
+        model = _join(init_date.isoformat(), layout.model_dir)
+        found: str | None = None
+        if layout.ckpt_prefix is None:
+            found = _join(model, layout.variable, layout.data_subpath)
+        else:
+            _, checkpoints = self._entries(model)  # type: ignore[attr-defined]
+            matches = [name for name in checkpoints if name.startswith(layout.ckpt_prefix)]
+            if matches:
+                found = _join(model, max(matches, key=_checkpoint_rank), layout.variable, layout.data_subpath)
+        self._resolved[init_date] = found
+        return found
+
+    def _run_folder(self, init_date: date) -> str:
+        folder = self._resolve(init_date)
+        if folder is None:
+            raise SourceError(f"No {self.layout.model_dir} run for {init_date.isoformat()} under {self.label}")
+        # Provenance is parsed from the run actually read (its checkpoint and sampler settings).
+        self.location = _join(self._base_location, folder)
+        return folder
+
+    def list_lead_files(self, init_date: date) -> list[LeadFile]:
+        folder = self._resolve(init_date)
+        if folder is None:
+            return []
+        return _sorted_leads(self._lead_files_in(folder), init_date)  # type: ignore[attr-defined]
+
+
+class LiveAzureSource(_LiveLayoutMixin, AzureBlobSasSource):
+    """One model of upstream's live layout in Azure; ``prefix`` is ``<root>/<src>/<region>/``."""
+
+    def __init__(self, sas_url: str, prefix: str, layout: LiveLayout, **kwargs: Any):
+        super().__init__(sas_url, prefix, **kwargs)
+        self._init_layout(layout)
+        self._base_location = self.prefix
+        self.label = f"{self.label}<date>/{layout.model_dir}/{layout.ckpt_prefix or ''}*/{layout.variable}"
+
+
+class LiveLocalSource(_LiveLayoutMixin, LocalFolderSource):
+    """The live layout copied to a local folder (tests, manual drops)."""
+
+    def __init__(self, root: Path, layout: LiveLayout):
+        super().__init__(root)
+        self._init_layout(layout)
+        self._base_location = self.location

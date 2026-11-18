@@ -660,8 +660,9 @@ def test_registry_provenance_fills_in_what_the_path_does_not_say(settings, tmp_p
     _make_member_folders(tmp_path / "bundle", days=7, members=2)
     result = ingest_run(for_model(settings, "aurora_imerg_diffusion"), LocalFolderSource(tmp_path / "bundle"))
     provenance = json.loads(result.manifest_path.read_text())["provenance"]
-    assert provenance["model_type"] == "diffusion_unet" and provenance["sampler"] == "heun"
-    assert provenance["sampler_steps"] == 20 and provenance["ensemble_size"] == 2
+    # The registry only knows the model type; checkpoint and sampler come from live folder names.
+    assert provenance["model_type"] == "diffusion_unet" and provenance["ensemble_size"] == 2
+    assert "sampler" not in provenance and "checkpoint" not in provenance
 
 
 def test_shipped_default_model_is_aurora_imerg_unet(monkeypatch):
@@ -671,7 +672,8 @@ def test_shipped_default_model_is_aurora_imerg_unet(monkeypatch):
         config = get_settings().subseasonal
         assert config.source_id == "aurora_imerg_unet"
         families = {(spec.family, spec.downscaling) for spec in config.models.values()}
-        assert families == {(family, method) for family in ("ifs", "aurora_imerg", "aurora_era5") for method in ("unet", "diffusion", "bilinear")}
+        assert families == {(family, method) for family in ("ifs", "aurora_imerg", "aurora_era5") for method in ("unet", "diffusion", "flow_matching", "bilinear")}
+        assert all(spec.live and spec.sas_secret == "ITALYNORTH_SAS_URL" for spec in config.models.values())
     finally:
         get_settings.cache_clear()
 
@@ -1056,3 +1058,82 @@ def test_series_use_the_chosen_spell_lengths(client):
     run = client.get("/subseasonal/runs").json()["runs"][0]
     assert run["spell_days_range"] == {"dry": [2, 15], "wet": [2, 10]}
 
+
+
+# --- Upstream's live layout -------------------------------------------------------------------
+
+# Short stand-ins for upstream's long folder names (Windows paths stop at 260 characters).
+LIVE_DIFFUSION_DIR = "model_diffusion_unet_x"
+LIVE_VARIABLE = "tp_imerg"
+
+
+def _live_data_dir(root: Path, day: pd.Timestamp, ckpt: str) -> Path:
+    return root / f"{day:%Y-%m-%d}" / LIVE_DIFFUSION_DIR / ckpt / LIVE_VARIABLE / "precip_24h" / "data"
+
+
+def _make_live_ensemble(data_dir: Path, init: pd.Timestamp, days: int, members: int = 3, *, short_member: int | None = None) -> None:
+    data_dir.mkdir(parents=True, exist_ok=True)
+    for day in range(1, days + 1):
+        # The ensemble mean upstream writes beside the member folders; it must never be read as a member.
+        _write_lead_file(data_dir, day, init=init, value=99.0)
+    for member in range(members):
+        member_dir = data_dir / f"member_{member:03d}"
+        member_dir.mkdir()
+        last = days - 1 if member == short_member else days
+        for day in range(1, last + 1):
+            _write_lead_file(member_dir, day, init=init, value=float(member + 1))
+        if member == short_member:
+            # Still uploading.
+            (member_dir / f"{init:%Y-%m-%d}-00-{days * 24:04d}.nc.part").write_bytes(b"")
+
+
+def test_live_layout_picks_newest_complete_run_checkpoint_and_members(settings, tmp_path):
+    from cumulus.subseasonal.ingest import for_model
+    from cumulus.subseasonal.sources import LiveLayout, LiveLocalSource
+
+    root = tmp_path / "live"
+    first, second = INIT, INIT + pd.Timedelta(days=1)
+    good = "ckpt-d-717-ft-004000_heun_n30_cfg2_ens3"
+    # The complete run, next to an older step of the same checkpoint and an unused checkpoint.
+    _make_live_ensemble(_live_data_dir(root, first, good), first, days=7)
+    _make_live_ensemble(_live_data_dir(root, first, "ckpt-d-717-ft-002000_heun_n20_cfg2_ens3"), first, days=3)
+    _make_live_ensemble(_live_data_dir(root, first, "ckpt-d-722-100000_heun_n30_cfg2_ens3"), first, days=3)
+    # A newer run with one member still uploading, and a newer date without this model at all.
+    _make_live_ensemble(_live_data_dir(root, second, good), second, days=7, short_member=2)
+    (root / f"{INIT + pd.Timedelta(days=2):%Y-%m-%d}" / "bilinear_global_precip").mkdir(parents=True)
+
+    model = for_model(settings, "aurora_imerg_diffusion")
+    model = model.model_copy(update={"subseasonal": model.subseasonal.model_copy(update={"expected_lead_days": 7})})
+    assert model.subseasonal.retention_runs == 4
+    source = LiveLocalSource(root, LiveLayout(model_dir=LIVE_DIFFUSION_DIR, variable=LIVE_VARIABLE, ckpt_prefix="ckpt-d-717-"))
+    assert len(source.list_runs()) == 3
+    assert source.list_lead_files((INIT + pd.Timedelta(days=2)).date()) == []
+    # The mean beside the members is dropped; the members of the incomplete run are still listed.
+    assert {item.member for item in source.list_lead_files(second.date())} == {"member_000", "member_001", "member_002"}
+
+    result = ingest_run(model, source, require_complete=True)
+    assert result.run_id == "aurora_imerg_diffusion_2026092500"
+    manifest = json.loads(result.manifest_path.read_text())
+    provenance = manifest["provenance"]
+    assert provenance["checkpoint"] == "ckpt-d-717-ft-004000"
+    assert (provenance["sampler"], provenance["sampler_steps"], provenance["guidance_scale"]) == ("heun", 30, 2)
+    assert provenance["model_type"] == "diffusion_unet" and provenance["ensemble_size"] == 3
+    with xr.open_dataset(result.artifact_path, engine="scipy") as dataset:
+        assert dataset.sizes["member"] == 3
+        assert float(dataset["precip"].max()) == pytest.approx(3.0)
+
+
+def test_parse_model_path_reads_live_flow_matching_and_bilinear():
+    flow = parse_model_path(
+        "live_forecasts/downscaled_models/ifs/east_africa-ghana-kenya-senegal-west_africa/2026-11-13/"
+        "model_flow_matching_unet_multivar_residual_shifted_log_precip24h_only/"
+        "ckpt-fm-716-ft-global-control-004000_flow_heun_n20_cfg2_ens10/total_precipitation_24h_acc/precip_24h/data"
+    )
+    assert flow["model_type"] == "flow_matching_unet"
+    assert (flow["checkpoint"], flow["checkpoint_step"]) == ("ckpt-fm-716-ft-global-control-004000", 4000)
+    assert (flow["sampler"], flow["sampler_steps"], flow["guidance_scale"], flow["ensemble_size"]) == ("flow_heun", 20, 2, 10)
+    bilinear = parse_model_path(
+        "live_forecasts/downscaled_models/aurora/east_africa-ghana-kenya-senegal-west_africa/2026-11-16/"
+        "bilinear_global_precip/total_precipitation_24h_acc_era5/precip_24h/data"
+    )
+    assert bilinear == {"model_dir": "bilinear_global_precip", "model_type": "bilinear interpolation"}

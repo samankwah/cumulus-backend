@@ -12,11 +12,11 @@ name: Ingest 46-day runs
 # The models, their folders and their secrets all come from `subseasonal.models` in
 # configs/base.yaml: each model names the repository secret holding its container SAS URL
 # (`sas_secret`, Read + List permission:
-# https://<account>.blob.core.windows.net/<container>?sv=...&sig=...) and its folder inside
-# the container (`azure_prefix`). Today:
-#   IFS_UNET_SAS_URL       -> ifs_unet (Unet/), ifs_bilinear
-#   IFS_DIFFUSION_SAS_URL  -> ifs_diffusion (may be the same URL as IFS-UNet's)
-#   AURORA_SAS_URL         -> aurora_imerg_* and aurora_era5_* (unet, diffusion, bilinear)
+# https://<account>.blob.core.windows.net/<container>?sv=...&sig=...) and where its runs sit
+# (`live`: upstream's live layout, newest date folder first). Today every model reads
+#   ITALYNORTH_SAS_URL  -> https://italynorthdata.blob.core.windows.net/data?<token>
+# (IFS, Aurora-ERA5 and Aurora-IMERG x UNet, Diffusion, Flow matching, Bilinear). Ensembles are
+# ~530 MB of raw files a run, so each model's raw download is deleted once ingested.
 # A model whose secret is not set is skipped with a warning. Once any model fails, an issue
 # labelled "ingest-failure" is opened (or commented on).
 #
@@ -52,7 +52,7 @@ concurrency:
 jobs:
   ingest:
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 120
     steps:
       - uses: actions/checkout@v5
 
@@ -97,7 +97,7 @@ jobs:
               echo "::warning::Repository secret ${secret_name:-<none in configs/base.yaml>} is not set; skipping $model."
               continue
             fi
-            args=(--model "$model" --source azure)
+            args=(--model "$model" --source azure --clean-raw)
             if [ -n "$INIT_DATE" ]; then
               args+=(--init-date "$INIT_DATE")
             else

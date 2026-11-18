@@ -276,6 +276,22 @@ def _remove_empty_dirs(root: Path) -> None:
             pass
 
 
+def _index_for(settings: Settings, tree: Tree) -> dict[str, dict[str, Any]]:
+    """The tree's index, fetched once if needed. Never touches local files.
+
+    Lookups must not sync: in an ingest process, a sync would delete the runs it just wrote
+    (they are not in the store yet). Only the API's ``refresh`` and ``pull`` mirror the store.
+    """
+    key = str(tree.root)
+    if key not in _indexes:
+        try:
+            _indexes[key] = _fetch_index(settings, tree) or {}
+        except (StoreError, OSError, ValueError) as exc:
+            logger.warning("Reading the Blob store index of %s failed: %s", tree.prefix, exc)
+            return {}
+    return _indexes[key]
+
+
 def _tree_for(settings: Settings, path: Path) -> tuple[Tree, str] | None:
     resolved = Path(path).resolve()
     for tree in trees(settings):
@@ -295,9 +311,7 @@ def ensure_file(settings: Settings, path: Path) -> bool:
     if found is None:
         return False
     tree, relative = found
-    if str(tree.root) not in _indexes:
-        refresh(settings, force=True)
-    entry = _indexes.get(str(tree.root), {}).get(relative)
+    entry = _index_for(settings, tree).get(relative)
     if entry is None:
         return False
     try:
@@ -316,11 +330,9 @@ def listed(settings: Settings, directory: Path) -> list[str]:
     if found is None:
         return []
     tree, relative = found
-    if str(tree.root) not in _indexes:
-        refresh(settings, force=True)
     prefix = f"{relative}/" if relative not in ("", ".") else ""
     names = []
-    for name in _indexes.get(str(tree.root), {}):
+    for name in _index_for(settings, tree):
         if name.startswith(prefix) and "/" not in name[len(prefix) :]:
             names.append(name[len(prefix) :])
     return sorted(names)

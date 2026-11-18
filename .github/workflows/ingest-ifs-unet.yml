@@ -135,6 +135,9 @@ jobs:
           echo "ingested=${ingested[*]}" >> "$GITHUB_OUTPUT"
 
       - name: Test
+        env:
+          # The tests use their own sample runs, not the store pulled above.
+          CUMULUS_STORE__URL: ""
         run: |
           pip install -e ".[dev]"
           python -m pytest -q tests/test_subseasonal.py tests/test_store.py
